@@ -1,189 +1,82 @@
-from ngclearn.components import GaussianErrorCell as ErrorCell, RateCell, HebbianSynapse, StaticSynapse
-import ngclearn.utils.weight_distribution as dist
-from ngclearn.operations import summation as summ
+import Dataloading import vocab_size,N_EMBD,block_size
 from ngcsimlib.context import Context
 from ngclearn.utils import JaxProcess
-from jax import numpy as jnp,random,jit
-import jax
-import numpy as np 
-from jax import jit,random,numpy as jnp,lax,nn
+import ngclearn.utils.weight_distribution as dist
+from ngclearn.utils.model_utils import drop_out,softmax,gelu,layer_normalize
+from ngclearn.utils.optim import adam
+from jax import jit,random,numpy as jnp 
+from ngclearn.com.jaxComponent import JaxComponent
+from jax import numpy as jnp, random, jit
+from flax import nnx
+from flax import linen as nn
+from ngclearn.utils.model_utils import drop_out, softmax, gelu, layer_normalize
 from functools import partial as bind
-
-wlb=-0.3
-wub=0.
-optim_type = "adam"
-# creating seeding keys (jax style)
-dkey=random.PRNGKey(1234)
-dkey,*subkeys=random.split(dkey,2)
-
-class Embedding:
-    def __init__(self,vocab_size,vocab_size,n_head,block_size,tau_m,n_embd,eta,gamma,**kwargs):
-        self.n_head=n_head
-        self.head_size=n_embd//self.n_head
-        with Context("ngc") as ngc:
-            
-            self.Z_word=RateCell("Z_word",n_units=vocab_size,tau_m=0,act_fx=act_fx,prior=("gaussian",gamma),integration_type="euler")
-            self.Z_pos=RateCell("Z_pos",n_units=block_size,tau_m=0,act_fx=act_fx,prior=("gaussian",gamma),integration_type="euler")
-
-            self.W_word=HebbianSynapse("W_word",shape=(vocab_size,n_embd),eta=eta,weight_init=dist.uniform(amin=wlb,amax=wub),
-                                bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[0])
-            self.W_pos=HebbianSynapse("W_pos",shape=(block_size,n_embd),eta=eta,weight_init=dist.uniform(amin=wlb,amax=wub),
-                                bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[1])
+class TokenAndPostionalEmbedding(nnx.Module):
+    def __init__(self,vocab_size,n_embd,block_size,dropout,batch_size,key,**kwargs):
+        self.block_size=block_size
+        self.vocab_size = vocab_size
+        self.n_embd=n_embd
+        rngs=nnx.Rngs(default=key)
+        self.token_embed=nnx.Embed(num_embedding=vocab_size,features=n_embd,rngs=rngs)
+        self.pos_emb=nnx.Embed(num_embedding=block_size,features=n_embd,rngs=rngs)
+        
+    def __call__(self,x.jax.Array):
+        maxlen=jnp.shape(x)[-1]
+        x=self.token_embed(x)
+        postions=jnp.arange(start=0,stop=maxlen,step=1)
+        y=self.pos_emb(postions)
+        return x+y
 
 
-            self.Z_word = RateCell(
-                    "z1", n_units=n_embd, tau_m=tau_m, act_fx=act_fx, prior=("gaussian", 0.),
-                    integration_type="euler"
+class feedforward_1(JaxComponent):
+    def __init__(self,):
+        dkey1, dkey2 = random.split(dkey, 2)
+        with Context("feedforward_1") as feedforward_1:
+          
+            self.emlp_1=ErrorCell("emlp_1", n_units=hid1_dim)
+            self.mlp_1=RateCell("mlp_1",n_units=hid1,tau_m=tau_m,act_fx=act_fx,prior("gaussian",0.),integration_type='euler')
+            self.Whid1=HebbianSynapse(
+                    "Whid1", shape=(hid1, 4* hid1), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
-            self.Z_pos = RateCell(
-                    "z1", n_units=n_embd, tau_m=tau_m, act_fx=act_fx, prior=("gaussian", 0.),
-                    integration_type="euler"
-                )
+            # self.layernorm_2=nn.LayerNorm(epsilon=1e-6, use_scale=True, use_bias=True)
+            self.Whid0.inputs << self.mlp_0.zF
+            self.emlp_1.mu << self.Whid0.outputs
+            self.emlp_1.target << self.mlp_1.z
 
-            self.e_word=ErrorCell("e_word", n_units=n_embd)
-
-            self.e_pos=ErrorCell("e_pos", n_units=n_embd)
-            self.E_pos = StaticSynapse(
-                    "E_pos", shape=(hid2_dim, hid1_dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-                )
-            self.E_embed = StaticSynapse(
-                    "E_embed", shape=(out_dim, hid2_dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
-                )
-            self.E_word = StaticSynapse(
-                    "E_word", shape=(hid2_dim, hid1_dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[6]
-                )
-            self.sum_two_inputs=RateCell("summation",n_units=block_size,tau_m=0,act_fx=act_fx,prior=("gaussian",gamma),integration_type="euler")
-            #start connecting 
-            #word embediing 
-            self.W_word.inputs<< self.Z_word.zF
-            self.e_word.mu << self.self.W_word.outputs
-            self.e_word.target=self.Z_word.z
-            # postion 
-
-            self.W_pos.inputs << self.Z_pos.zF
-            self.e_pos.mu << self.W_pos.outputs
-            self.e_pos.target << self.Z_pos.z
-            # mi combinded for 
-            self.sum_two_inputs=summ(self.Z_word.zF,self.Zpos.zF)
-            self.W_embed.inputs << self.sum_two_inputs
-            self.e_embed.mu << self.W_embed.outputs
-            self.e_embed.target << self.Z_embed.z
-
-
-
-            self.E_word.inputs << self.e_word.dmu
-            self.Z_word.j << self.E_word.outputs
-            self.Z_word.j_td << self.e_word.dtarget
-
-            ### wire epos to zpos via W2.T and e1 to z1 via d/dz1
-            self.E_pos.inputs << self.e_pos.dmu
-            self.Z_pos.j << self.E_pos.outputs
-            self.Z_pos.j_td << self.e_pos.dtarget
-
-            ## wire e3 to z2 via W3.T and e2 to z2 via d/dz2
-            self.E_embed.inputs << self.e_embed.dmu
-            self.sum_two_inputs.j << self.E_embed.outputs
-            self.sum_two_inputs.j_td << self.e_embed.dtarget
-
-
-
-            ## setup W_word for its 2-factor Hebbian update
-            self.W_word.pre  << self.Z_word.zF
-            self.W_word.post << self.e_word.dmu
-
-            self.W_pos.pre << self.Z_pos.zF
-            self.W_pos.post << self.e_pos.dmu
-
-            self.W_embed.pre << self.sum_two_inputs.zF
-            self.W.embed.post <<  self.e_embed.dmu
-            self.Q1 = StaticSynapse(
-                    "Q1", shape=(in_dim, hid1_dim), bias_init=dist.constant(value=0.), key=subkeys[0]
-                )
-                self.Q2 = StaticSynapse(
-                    "Q2", shape=(hid1_dim, hid2_dim), bias_init=dist.constant(value=0.), key=subkeys[0]
-                )
-                self.Q3 = StaticSynapse(
-                    "Q3", shape=(hid2_dim, out_dim), bias_init=dist.constant(value=0.), key=subkeys[0]
-                )
-                ## wire q0 -(Q1)-> q1, q1 -(Q2)-> q2, q2 -(Q3)-> q3
-                self.Q1.inputs << self.q0.zF
-                self.q1.j << self.Q1.outputs
-                self.Q2.inputs << self.q1.zF
-                self.q2.j << self.Q2.outputs
-                self.Q3.inputs << self.q2.zF
-                self.q3.j << self.Q3.outputs
-
-                    ## ADVANCE process: forward activity flow
-        advance_process = (
-            JaxProcess(name="advance_process")
-            >> self.E_word.advance_state
-            >> self.E_pos.advance_state
-            >> self.E_embed.advance_state
-            >> self.Z_word.advance_state
-            >> self.Z_pos.advance_state
-            >> self.sum_two_inputs.advance_state
-            >> self.W_word.advance_state
-            >> self.W_pos.advance_state
-            >> self.e_word.advance_state
-            >> self.e_pos.advance_state
-        )
-
-        ## RESET process: clear neuronal states and error cells
-        reset_process = (
-            JaxProcess(name="reset_process")
-            >> self.Z_word.reset
-            >> self.Z_pos.reset
-            >> self.sum_two_inputs.reset
-            >> self.e_word.reset
-            >> self.e_pos.reset
-        )
-
-        ## EVOLVE process: apply Hebbian plasticity updates (learning)
-        evolve_process = (
-            JaxProcess(name="evolve_process")
-            >> self.W_word.evolve
-            >> self.W_pos.evolve
-        )
-
-        ## PROJECT process: handles Q-paths (feedforward static mappings)
-        project_process = (
-            JaxProcess(name="project_process")
-            >> self.Q1.advance_state
-            >> self.Q2.advance_state
-            >> self.Q3.advance_state
-        )
-
-        ## Collect all processes
-        processes = (reset_process, advance_process, evolve_process, project_process)
-
-                    
-
-
-
-
-
-
-
-
-
-
-
-            # Embedding layer Complited 
+        def _dynamic(self,process):
             @Context.dynamicCommand
-            def clamp(x):
-                self.Z_word.j.set(x)
-                self.Z_pos.j.set(x)
+            def clamp_input(x):
+                self.z0.j.set(x)
+                
+class feedforward_2(JaxComponent):
+    def __init__(self,):
+        dkey1, dkey2 = random.split(dkey, 2)
+        with Context("feedforward_2") as feedforward_2:
 
-            
+            self.emlp_2=ErrorCell("emlp_2", n_units=hid1_dim)
+            self.mlp_2=RateCell("mlp_2",n_units=hid1,tau_m=tau_m,act_fx=act_fx,prior("gaussian",0.),integration_type='euler')
+            self.Whid2=HebbianSynapse(
+                    "Whid2", shape=(hid1*4 , hid1), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+                )
+            self.Whid1.inputs << self.mlp_1.zF
+            self.emlp_2.mu << self.Whid1.outputs
+            self.emlp_2.target << self.mlp_2.z
 
-class PcnTransformer:
-    #TODO
-    def masked_fill(x: jax.Array,mask: jax.Array,value=0) -> jax.Array:
-        return jnp.where(mask,jnp.broadcast_to(value,x.shape),x)
+
+            def _dynamic(self,process):
+                @Context.dynamicCommand
+                def clamp_input(x):
+                    self.z0.j.set(x)
+      
 
 
+class selfAttension :
     @bind(jax.jit,static_argnums=[5,6])
-    def self_attention(dkey,params: tuple,x1: jax.Array,x2: jax.Array,mask: jax.Array,n_heads: int=8,drop_out: float =0.0) -> jax.Array:
+    def masked_fill(self,x: jax.Array,mask: jax.Array,value=0) -> jax.Array:
+            return jnp.where(mask,jnp.broadcast_to(value,x.shape),x)
+    def __init__(self,dkey,x1: jax.Array,mask: jax.Array,n_heads: int=8,drop_out: float =0.5) -> jax.Array:
         """Args:
             dkey: JAX key to trigger any internal noise (drop-out)
 
@@ -202,16 +95,20 @@ class PcnTransformer:
         Returns:
             jax.Array: output of self-attention
         """
+        with Context("attention") as attention:
 
             B,T,Dq=x1.shape
-            _,s,Dkv=x2.shape
-
-            Wq,bq,Wk,bk,Wv,bv,Wout,bout=params
-            # normal linear transformation 
-            q=x1 @ Wq + bq
-            k=x2 @ Wq + bk
-            v= x2 @ Wv + bv
-
+            self.q=HebbianSynapse("query",shape=(vocab_size,n_embd),eta=eta,weight_init=dist.uniform(amin=wlb,amax=wub),
+                                bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[0])
+            self.k=HebbianSynapse("key",shape=(vocab_size,n_embd),eta=eta,weight_init=dist.uniform(amin=wlb,amax=wub),
+                                bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[1])
+            self.v=HebbianSynapse("value",shape=(vocab_size,n_embd),eta=eta,weight_init=dist.uniform(amin=wlb,amax=wub),
+                                bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[2])
+            self.attention=HebbianSynapse("attention",shape=(vocab_size,n_embd),eta=eta,weight_init=dist.uniform(amin=wlb,amax=wub),
+                                bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[3])
+            self.q.inputs << x
+            self.k.inputs << x
+            self.v.inputs << x
             embeding_shape = q.shape[-1]
             head_size= embeding_shape // n_heads
             q=q.reshape((B,T,n_heads,head_size)).transpose([0,2,1,3])
@@ -229,121 +126,154 @@ class PcnTransformer:
             if dropout_rate >0:
                 score ,_ = drop_out(dkey,score,rate=dropout_rate)
             attention = jnp.einsum("BHTS,BHTS->BHTE",score,v)
-            attention=attention.transpose([0,2,1,3]).reshape(B,T,-1) #(B,T,H,E) =>(B,T,D)
-            return attention @ Wout + bout # (B,T,Dq)
-    @bind(jax.jit,static_argnums=[4, 5, 6, 7, 8])
-    def run_attention_probe(
-        dkey, params, encodings, mask, n_heads: int, dropout: float = 0.0, use_LN=False, use_LN_input=False,
-        use_softmax=True):
+            attentions=attention.transpose([0,2,1,3]).reshape(B,T,-1) #(B,T,H,E) =>(B,T,D)
+            return self.attention.inputs << attentions
+
+class PCN(JaxComponent):
+    def __init__(model_name="pcn",T=10,self,tau_m=10,out_dim=out_dim,act_fx="tanh",dkey,embed_value,dt=1.,loadDir=None 
+    ,eta=0.001,exp_dir="exp",hid1,hid2,hid3,hid4,in_dim,,vocab_size,n_embd,block_size,drop_out,**kwargs):
+        dkey,*subkeys=random.split(dkey,10)
+        self.T=10
+        self.dt=dt
+        optim_type="adam"
+        makedir(exp_dir)
+        makedir(exp_dir + "/filters")
+        wlb = -0.3
+        wub = 0.3
+        self.embedding=TokenAndPostionalEmbedding(vocab_size,n_embd,block_size,dropout,batch_size,dkey)
         
 
-        dkey1,key2 =random.split(dkey,2)
-        learnable_query, Wq, bq, Wk, bk, Wv, bv, Wout, bout,\
-        Wqs, bqs, Wks, bks, Wvs, bvs, Wouts, bouts, Wlnattn_mu,\
-        Wlnattn_scale, Whid1, bhid1, Wln_mu1, Wln_scale1, Whid2,\
-        bhid2, Wln_mu2, Wln_scale2, Whid3, bhid3, Wln_mu3, Wln_scale3,\
-        Wy, by, ln_in_mu, ln_in_scale, ln_in_mu2, ln_in_scale2 = params
-        self_attn_params = (Wq, bq, Wk, bk, Wv, bv, Wout, bout)
-
-        if use_LN_input:
-            learnable_query=layer_normalize(learnable_query,ln_in_mu,ln_in_scale)
-            encodings=layer_normalize(encodeings,ln_in_mu2,ln_in_scale2)
-        features=self_attention(dkey1, cross_attn_params, learnable_query, encodings, mask, n_heads, dropout)
-
-        resdual_connections=features
-        if use_LN:
-            features=layer_normalize(features,Wln_mu1,Wln_scale1)
-        
+        if loadDir is not None:
+            self.load_from_disk(loadDir)
+        else :
+            with Context("Circuit") as self.circuit:
+                self.z_qkv=RateCell("z_qkv",n_units=in_dim,tau_m=0,act_fx="identity")
+                self.z_score=RateCell("z_score",n_units=hid1,tau_m=tau_m,act_fx=act_fx,prior("gaussian",0.),integration_type='euler')
+                self.e_score=ErrorCell("e_score",n_units=hid1)
+                self.z_fc1=RateCell("z_fc1",n_units=hid2 *4,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type="euler")
+                self.e_fc1=ErrorCell("e_fc1",n_units=hid2)
+                self.z_fc2=RateCell("z_fc2",n_units=hid3,tau_m=tau_m,act_fx=act_fx,prior("gaussian",0.),integration_type="euler")
+                self.e_fc2=ErrorCell("e_fc2",n_units=hid3)
+                self.zout=RateCell("zout",n_units=hid4,tau_m=tau_m,act_fx=act_fx,prior("gaussian",0.),integration_type="euler")
+                self.e_zout=ErrorCell("e_zout"n_units=hid4)
+                self.target_logits=RateCell("target_logits",n_units=out_dim,tau_m=0.,act_fx="identity")
+                self.e_target_logits=ErrorCell("e_target_logits")
 
 
-        #MLP
-
-        skip=features
-        if use_LN:
-            features=layer_normalize(features,Wln_mu1,Wln_scale1)
-        features=jnp.matmul((features),Whid1)+bhid1
-        features=gelu(features)
-        if use_LN:
-            features=layer_normalize(features,Wln_mu2,Wln_scale2)
-        features=features+skip
-        out=jnp.matmul(features,Wy)+by
-        if use_softmax:
-            outs=jax.nn.softmax(out)
-        return outs,features
-
-
-
-
-        # TODO not finished 
-
-
+                # connection
+                self.Wqkv_score = HebbianSynapse(
+                    "Wqkv_score", shape=(in_dim, hid1_dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+                )
+                self.Wscore_fc1 = HebbianSynapse(
+                    "Wscore_fc1", shape=(hid1, hid2), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+                )
+                self.Wfc1_fc2 = HebbianSynapse(
+                    "Wfc1_fc2", shape=(hid2, hid3), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+                )
+                self.Wfc2_zout = HebbianSynapse(
+                    "Wfc2_zout", shape=(hid3, hid4), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+                )
+                self.Wout_target = HebbianSynapse(
+                    "Wout_target", shape=(hid4,out_dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+                )
 
 
 
+                #feedback
+                self.Efc1_score = StaticSynapse(
+                    "Efc1_score", shape=(hid2, hid1), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                )
+                self.Efc2_fc1 = StaticSynapse(
+                    "Efc2_fc1", shape=(hid3, hid2), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                )
+                self.Eout_fc2 = StaticSynapse(
+                    "Eout_fc2", shape=(hid4, hid3), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                )
+                self.Etarget_out = StaticSynapse(
+                    "Etarget_out", shape=(hid4, out_dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                )
 
-class AttentiveProbe(Probe):
+                self.z_qkv.
+                
+                self.Wqkv_score.inputs << self.z_qkv.zF
+                self.e_score.mu <<self.Wqkv_score.outputs
+                self.e_score.target << self.z_score.z
 
+                self.Wscore_fc1.inputs << self.z_score.zF
+                self.e_fc1.mu << self.Wscore_fc1.outputs
+                self.e_fc1.target << self.z_fc1.z
 
-    # TODO UPDATEING WEIGHT BASED ON LOCAL ERROR IS NOT YER FORMED FOR ATTENTION MODEL
-    def __init__(
-        self,dkey,seq_length,n_embd,out_dim,num_heads=8,head_size,
-        batch_size=1,,use_LN=True,use_softmax=True,Dropout=0.5,block_size
-        eta=0.0002,eta_decay=0.0,min_eta=1e-5,**kwargs):
+                self.Wfc1_fc2.inputs << self.z_fc1.zF
+                self.e_fc2.mu << self.Wfc1_fc2.outputs
+                self.e_fc2.target << self.z_fc2.z
 
-        super().__init__(dkey,batch_size,**kwargs)
-        assert head_size % num_heads == 0, f"`attn_dim` must be divisible by `num_heads`. Got {attn_dim} and {num_heads}."
-        self.dkey, *subkeys = random.split(self.dkey, 26)
-        self.num_heads = num_heads
-        self.batch_size=batch_size
-        self.n_embd = n_embd
-        self.head_size=head_size
-        self.out_dim = out_dim
-        self.use_softmax = use_softmax
-        self.use_LN = use_LN
-        self.use_LN_input = use_LN_input
-        self.dropout = dropout
-        self.block_size=block_size
+                self.Wfc2_zout.inputs << self.z_fc2.zF
+                self.e_zout.mu << self.Wfc2_zout.outputs
+                self.e_zout.target << self.zout.z
 
-        sigma = 0.02
+                self.Wout_target.inputs << self.zout.zF
+                self.e_target_logits.mu << self.Wout_target.outputs
+                self.e_target_logits.target << self.target_logits.z
 
-        Wq = random.normal(subkeys[0], (input_dim, head_size)) * sigma
-        bq = random.normal(subkeys[1], (1, attn_dim)) * sigma
-        Wk = random.normal(subkeys[2], (input_dim, head_size)) * sigma
-        bk = random.normal(subkeys[3], (1, attn_dim)) * sigma
-        Wv = random.normal(subkeys[4], (input_dim, head_size)) * sigma
-        bv = random.normal(subkeys[5], (1, attn_dim)) * sigma
-        Wout = random.normal(subkeys[6], (head_size, head_size)) * sigma
-        bout = random.normal(subkeys[7], (1, head_size)) * sigma
-        self_attn_params = (Wq, bq, Wk, bk, Wv, bv, Wout, bout)
-        ln_in_mu = jnp.zeros((1, learnable_query_dim)) ## LN parameter
-        ln_in_scale = jnp.ones((1, learnable_query_dim))  ## LN parameter (applied to output of attention)
-        self_attn_scaling_params=(Wq, bq, Wk, bk, Wv, bv, Wout, bout)
-        
-        self.mask=np.zeros(self.batch_size,self.block_size,self.block_size)
-
-        #MLP PARAMETERS
-        Whid1 = random.normal(subkeys[16], (learnable_query_dim, learnable_query_dim)) * sigma
-        bhid1 = random.normal(subkeys[17], (1, learnable_query_dim)) * sigma
-        Wln_mu1 = jnp.zeros((1, learnable_query_dim)) ## LN parameter
-        Wln_scale1 = jnp.ones((1, learnable_query_dim)) ## LN parameter
-        Whid2 = random.normal(subkeys[18], (learnable_query_dim, learnable_query_dim * 4)) * sigma
-        bhid2 = random.normal(subkeys[19], (1, learnable_query_dim * 4)) * sigma
-        Wln_mu2 = jnp.zeros((1, learnable_query_dim)) ## LN parameter
-        Wln_scale2 = jnp.ones((1, learnable_query_dim)) ## LN parameter
-        Whid3 = random.normal(subkeys[20], (learnable_query_dim * 4, learnable_query_dim)) * sigma
-        bhid3 = random.normal(subkeys[21], (1, learnable_query_dim)) * sigma
-        Wln_mu3 = jnp.zeros((1, learnable_query_dim * 4)) ## LN parameter
-        Wln_scale3 = jnp.ones((1, learnable_query_dim * 4)) ## LN parameter
-        Wy = random.normal(subkeys[22], (learnable_query_dim, out_dim)) * sigma
-        by = random.normal(subkeys[23], (1, out_dim)) * sigma
-        mlp_params = (ln_in_mu,ln_in_scale,Whid1, bhid1, Wln_mu1, Wln_scale1, Whid2, bhid2, Wln_mu2, Wln_scale2, Whid3, bhid3, Wln_mu3, Wln_scale3, Wy, by)
-
-        self.optim_params = adam.adam_init(self.probe_params)
-        self.eta = eta #0.001
-        self.eta_decay = eta_decay
-        self.min_eta = min_eta
+                #feedback
+                self.Efc1_score.inputs << self.e_fc1.dmu
+                self.z_score.j  << self.Efc1_score.outputs
+                self.z_score.j_td << self.e_score.dtarget
 
 
+                self.Efc2_fc1.inputs << self.e_fc2.dmu
+                self.z_fc1.j << self.Efc2_fc1.outputs
+                self.z_fc1.j_t << self.e_fc1.dtarget
 
-        
+
+                self.Eout_fc2.inputs <<  self.e_zout.dmu
+                self.z_fc2.j << self.Eout_fc2.outputs
+                self.z_fc2.j_td<< self.e_fc2.dtarget
+
+
+                self.Etarget_out.inputs << self.e_target_logits.dmu
+                self.z_out.j << self.Etarget_out.outputs
+                self.z_out.j_td << self.e_zout.dtarget
+
+                #setup 2 factor hebbian update
+
+                self.Wqkv_score << self.z_qkv.zF
+                self.Wqkv_score << self.e_score.dmu
+
+
+                self.Wscore_fc1 << self.z_score.zF
+                self.Wscore_fc1 << self.e_fc1.dmu
+
+                self.Wfc1_fc2 << self.z_fc1.zF
+                self.Wfc1_fc2 << self.e_fc2.dmu
+
+                self.Wfc2_zout << self.z_fc2.zF
+                self.Wfc2_zout  << self.e_zout.dmu
+
+                self.Wout_target << self.zout.zF
+                self.Wout_target << self.e_target_logits.dmu
+
+
+
+
+
+                #:TODO MANY THINGS NOT CODED 
+
+
+        def _dynamic(self,process):
+
+            #TODO MANY THINGS TO ADD 
+            @Context.dynamicCommand
+            def clamp_input(x):
+                self.z_qkv.j.set(x)
+                
+                #TODO NOT qo is not done 
+            def clamp_target(y):
+                self.target_logits.j.set(y)
+
 
