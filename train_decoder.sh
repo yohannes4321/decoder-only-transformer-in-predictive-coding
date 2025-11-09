@@ -11,7 +11,7 @@ rm -rf exp/*
 mkdir -p exp
 
 # Run the training script
-python train.py \
+python train_pcn.py \
     --data_dir "$DATA_DIR" \
     --tokenized_dir "$TOKENIZED_DIR" \
     --verbosity 1

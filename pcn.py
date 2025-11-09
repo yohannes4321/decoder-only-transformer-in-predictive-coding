@@ -1,4 +1,4 @@
-import Dataloading import vocab_size
+from Dataloader import vocab_size
 from ngcsimlib.context import Context
 from ngclearn.utils import JaxProcess
 import ngclearn.utils.weight_distribution as dist
@@ -31,25 +31,12 @@ class TokenAndPostionalEmbedding(nnx.Module):
                     "Wembed", shape=(in_dim, hid1_dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
-    def __call__(self,x.jax.Array):
+    def __call__(self,x):
         maxlen=jnp.shape(x)[-1]
         x=self.token_embed(x)
         postions=jnp.arange(start=0,stop=maxlen,step=1)
         y=self.pos_emb(postions)
-        self.embedding.j << (x+y)
-        self.Wembed.inputs  << self.embedding
-        advance_process=(JaxProcess(name="advance_process")
-                        >> self.embedding.advance_state
-                        >> self.Wembed.advance_state
-        
-        )
-        reset_process = (JaxProcess(name="reset_process")
-                        >> self.embedding.reset
-                        >> self.Wembed.reset
-        )
-
-dkey,*subkeys=random.split(dkey,10)
-embedding_table=TokenAndPostionalEmbedding(vocab_size,n_embd,block_size,drop_out,batch_size)
+        return x+ y
 
 
 

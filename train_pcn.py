@@ -1,7 +1,7 @@
 from jax import numpy as jnp, random
 import time, os
-from dataloader import BPETokenizer, PennTreeBankDataset, create_dataloader
-from pcn_model import PCN  # or your NGC/decoder transformer model
+from Dataloader import BPETokenizer, PennTreeBankDataset, create_dataloader
+from pcn import PCN  # or your NGC/decoder transformer model
 from ngclearn.utils.metric_utils import measure_CatNLL
 import numpy as np
 
