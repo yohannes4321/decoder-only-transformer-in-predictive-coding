@@ -19,13 +19,31 @@ class TokenAndPostionalEmbedding(nnx.Module):
         rngs=nnx.Rngs(default=key)
         self.token_embed=nnx.Embed(num_embedding=vocab_size,features=n_embd,rngs=rngs)
         self.pos_emb=nnx.Embed(num_embedding=block_size,features=n_embd,rngs=rngs)
-        
+        self.embedding=RateCell("embedding",n_units=in_dim,tau_m=0,act_fx="identity")
+        self.Wembed = HebbianSynapse(
+                    "Wembed", shape=(in_dim, hid1_dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+                )
     def __call__(self,x.jax.Array):
         maxlen=jnp.shape(x)[-1]
         x=self.token_embed(x)
         postions=jnp.arange(start=0,stop=maxlen,step=1)
         y=self.pos_emb(postions)
-        return x+y
+        self.embedding.j << (x+y)
+        self.Wembed.inputs  << self.embedding
+        advance_process=(JaxProcess(name="advance_process")
+                        >> self.embedding.advance_state
+                        >> self.Wembed.advance_state
+        
+        )
+        reset_process = (JaxProcess(name="reset_process")
+                        >> self.embedding.reset
+                        >> self.Wembed.reset
+        )
+
+
+
+
 
 
 class feedforward_1(JaxComponent):
@@ -43,11 +61,19 @@ class feedforward_1(JaxComponent):
             self.Whid0.inputs << self.mlp_0.zF
             self.emlp_1.mu << self.Whid0.outputs
             self.emlp_1.target << self.mlp_1.z
-
+            advance_process=(JaxProcess(name="advance_process")
+                            >> self.mlp_1.advance_state
+                            >> self.Whid1.advance_state
+            
+            )
+            reset_process = (JaxProcess(name="reset_process")
+                             >> self.mlp_1.reset
+                            >> self.Whid1.reset
+            )
         def _dynamic(self,process):
             @Context.dynamicCommand
             def clamp_input(x):
-                self.z0.j.set(x)
+                self.mlp_1.j.set(x)
                 
 class feedforward_2(JaxComponent):
     def __init__(self,):
@@ -64,15 +90,23 @@ class feedforward_2(JaxComponent):
             self.emlp_2.mu << self.Whid1.outputs
             self.emlp_2.target << self.mlp_2.z
 
-
+            advance_process=(JaxProcess(name="advance_process")
+                            >> self.mlp_2.advance_state
+                            >> self.Whid2.advance_state
+            
+            )
+            reset_process = (JaxProcess(name="reset_process")
+                             >> self.mlp_2.reset
+                            >> self.Whid2.reset
+            )
             def _dynamic(self,process):
                 @Context.dynamicCommand
                 def clamp_input(x):
-                    self.z0.j.set(x)
+                    self.mlp_2.j.set(x)
       
 
 
-class selfAttension :
+class selfAttention :
     @bind(jax.jit,static_argnums=[5,6])
     def masked_fill(self,x: jax.Array,mask: jax.Array,value=0) -> jax.Array:
             return jnp.where(mask,jnp.broadcast_to(value,x.shape),x)
@@ -127,7 +161,19 @@ class selfAttension :
                 score ,_ = drop_out(dkey,score,rate=dropout_rate)
             attention = jnp.einsum("BHTS,BHTS->BHTE",score,v)
             attentions=attention.transpose([0,2,1,3]).reshape(B,T,-1) #(B,T,H,E) =>(B,T,D)
-            return self.attention.inputs << attentions
+            self.attention.inputs << attentions
+
+            advance_process=(JaxProcess(name="advance_process")
+                            >> self.q.advance_state
+                            >> self.k.advance_state
+                            >> self.v.advance_state
+            
+            )
+            reset_process = (JaxProcess(name="reset_process")
+                             >> self.q.reset
+                            >> self.k.reset
+                            >> self.v.reset
+            )
 
 class PCN(JaxComponent):
     def __init__(model_name="pcn",T=10,self,tau_m=10,out_dim=out_dim,act_fx="tanh",dkey,embed_value,dt=1.,loadDir=None 
@@ -141,7 +187,10 @@ class PCN(JaxComponent):
         wlb = -0.3
         wub = 0.3
         self.embedding=TokenAndPostionalEmbedding(vocab_size,n_embd,block_size,dropout,batch_size,dkey)
-        
+        self.feedforward_1=feedforward_1()
+        self.feedforward_2=feedforward_2()
+        self.layer_normalize=layer_normalize()
+        self.attention=selfAttention(dkey,x1 ,mask ,n_heads: int=8,drop_out: float =0.5)
 
         if loadDir is not None:
             self.load_from_disk(loadDir)
@@ -198,7 +247,15 @@ class PCN(JaxComponent):
                     "Etarget_out", shape=(hid4, out_dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
                 )
 
-                self.z_qkv.
+                # assigning class 
+                self.z_qkv.z= self.embedding()
+                self.z_score.z=self.layer_normalize(self.attention(self.z_score.z))
+                self.z_fc1.z=self.layer_normalize(self.feedforward_1(self.z_fc1.z))
+
+                self.z_fc2=self.layer_normalize(gelu(self.feedforward_2(self.z_fc2.z)))
+
+
+
                 
                 self.Wqkv_score.inputs << self.z_qkv.zF
                 self.e_score.mu <<self.Wqkv_score.outputs
@@ -262,7 +319,9 @@ class PCN(JaxComponent):
 
 
 
-                #:TODO MANY THINGS NOT CODED 
+
+                # RESTOF THE CODE 
+                
 
 
         def _dynamic(self,process):
