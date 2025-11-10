@@ -32,14 +32,14 @@ val_loader   = create_dataloader(val_dataset, BATCH_SIZE, shuffle=False, pad_tok
 # Model setup
 # -----------------------------
 dkey = random.PRNGKey(1234)
-dkey, subkey = random.split(dkey)
+
 
 x_dim = BLOCK_SIZE
 y_dim = vocab_size
 
 print(f"Building Decoder-only Transformer: vocab={vocab_size}, block={BLOCK_SIZE}")
 model = PCN(
-    subkey,
+    dkey,
     x_dim, y_dim,
     hid1_dim=64, hid2_dim=64,
     T=2, dt=1., tau_m=25.,

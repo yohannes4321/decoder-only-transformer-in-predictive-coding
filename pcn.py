@@ -5,7 +5,7 @@ import ngclearn.utils.weight_distribution as dist
 from ngclearn.utils.model_utils import drop_out,softmax,gelu,layer_normalize
 from ngclearn.utils.optim import adam
 from jax import jit,random,numpy as jnp 
-from ngclearn.com.jaxComponent import JaxComponent
+# from ngclearn.com.jaxComponent import JaxComponent
 from jax import numpy as jnp, random, jit
 from flax import nnx
 from flax import linen as nn
@@ -26,11 +26,7 @@ class TokenAndPostionalEmbedding(nnx.Module):
         rngs=nnx.Rngs(default=key)
         self.token_embed=nnx.Embed(num_embedding=vocab_size,features=n_embd,rngs=rngs)
         self.pos_emb=nnx.Embed(num_embedding=block_size,features=n_embd,rngs=rngs)
-        self.embedding=RateCell("embedding",n_units=in_dim,tau_m=0,act_fx="identity")
-        self.Wembed = HebbianSynapse(
-                    "Wembed", shape=(in_dim, hid1_dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-                )
+      
     def __call__(self,x):
         maxlen=jnp.shape(x)[-1]
         x=self.token_embed(x)
@@ -42,13 +38,13 @@ class TokenAndPostionalEmbedding(nnx.Module):
 
 
 
-class feedforward_1(JaxComponent):
+class feedforward_1():
     def __init__(self,):
         dkey1, dkey2 = random.split(dkey, 2)
         with Context("feedforward_1") as feedforward_1:
           
             self.emlp_1=ErrorCell("emlp_1", n_units=hid1_dim)
-            self.mlp_1=RateCell("mlp_1",n_units=hid1,tau_m=tau_m,act_fx=act_fx,prior("gaussian",0.),integration_type='euler')
+            self.mlp_1=RateCell("mlp_1",n_units=hid1,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type='euler')
             self.Whid1=HebbianSynapse(
                     "Whid1", shape=(hid1, 4* hid1), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
@@ -71,13 +67,13 @@ class feedforward_1(JaxComponent):
             def clamp_input(x):
                 self.mlp_1.j.set(x)
                 
-class feedforward_2(JaxComponent):
+class feedforward_2():
     def __init__(self,):
         dkey1, dkey2 = random.split(dkey, 2)
         with Context("feedforward_2") as feedforward_2:
 
             self.emlp_2=ErrorCell("emlp_2", n_units=hid1_dim)
-            self.mlp_2=RateCell("mlp_2",n_units=hid1,tau_m=tau_m,act_fx=act_fx,prior("gaussian",0.),integration_type='euler')
+            self.mlp_2=RateCell("mlp_2",n_units=hid1,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type='euler')
             self.Whid2=HebbianSynapse(
                     "Whid2", shape=(hid1*4 , hid1), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
@@ -171,36 +167,52 @@ class selfAttention :
                             >> self.v.reset
             )
 
-class PCN(JaxComponent):
-    def __init__(model_name="pcn",T=10,self,tau_m=10,out_dim=out_dim,act_fx="tanh",dkey,embed_value,dt=1.,loadDir=None,
-        eta=0.001,exp_dir="exp",hid1,hid2,hid3,hid4,in_dim,,vocab_size,n_embd,block_size,drop_out,**kwargs):
-        dkey,*subkeys=random.split(dkey,10)
-        self.T=10
-        self.dt=dt
-        optim_type="adam"
+class PCN():
+    def __init__(self, dkey, in_dim=1, out_dim=1, hid1_dim=128, hid2_dim=64, T=10,
+                 dt=1., tau_m=10., act_fx="tanh", eta=0.001, exp_dir="exp",
+                 model_name="pc_disc", loadDir=None, **kwargs):
+
+
+
+    
+
+        hid1,hid1_dim,hid2,hid2_dim,hid3,hid4=hid1_dim
+        self.exp_dir = exp_dir
+        self.model_name = model_name
+        self.nodes = None
         makedir(exp_dir)
         makedir(exp_dir + "/filters")
+
+        dkey, *subkeys = random.split(dkey, 10)
+
+        self.T = T
+        self.dt = dt
+        ## hard-coded meta-parameters for this model
+        optim_type = "adam"
         wlb = -0.3
+        wub = 0.3
         wub = 0.3
         self.embedding=TokenAndPostionalEmbedding(vocab_size,n_embd,block_size,dropout,batch_size,dkey)
         self.feedforward_1=feedforward_1()
         self.feedforward_2=feedforward_2()
         self.layer_normalize=layer_normalize()
-        self.attention=selfAttention(dkey,x1 ,mask ,n_heads: int=8,drop_out: float =0.5)
+        self.attention=selfAttention(dkey,x1 ,mask ,n_heads=8,drop_out=0.5)
 
         if loadDir is not None:
             self.load_from_disk(loadDir)
         else :
             with Context("Circuit") as self.circuit:
                 self.z_qkv=RateCell("z_qkv",n_units=in_dim,tau_m=0,act_fx="identity")
-                self.z_score=RateCell("z_score",n_units=hid1,tau_m=tau_m,act_fx=act_fx,prior("gaussian",0.),integration_type='euler')
+
+                self.z_score=RateCell("z_score",n_units=hid1,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
+
                 self.e_score=ErrorCell("e_score",n_units=hid1)
                 self.z_fc1=RateCell("z_fc1",n_units=hid2 *4,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type="euler")
                 self.e_fc1=ErrorCell("e_fc1",n_units=hid2)
-                self.z_fc2=RateCell("z_fc2",n_units=hid3,tau_m=tau_m,act_fx=act_fx,prior("gaussian",0.),integration_type="euler")
+                self.z_fc2=RateCell("z_fc2",n_units=hid3,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
                 self.e_fc2=ErrorCell("e_fc2",n_units=hid3)
-                self.zout=RateCell("zout",n_units=hid4,tau_m=tau_m,act_fx=act_fx,prior("gaussian",0.),integration_type="euler")
-                self.e_zout=ErrorCell("e_zout"n_units=hid4)
+                self.zout=RateCell("zout",n_units=hid4,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
+                self.e_zout=ErrorCell("e_zout",n_units=hid4)
                 self.target_logits=RateCell("target_logits",n_units=out_dim,tau_m=0.,act_fx="identity")
                 self.e_target_logits=ErrorCell("e_target_logits",n_units=out_dim)
 
@@ -386,7 +398,7 @@ class PCN(JaxComponent):
     >> self.e_target_logits.advance_state
 )
 
-"q_qkv", "q_score", "q_fc1", "q_fc2", "q_out", "qtarget_logits"
+
                 reset_process = (
     JaxProcess(name="reset_process")
     >> self.z_qkv.reset
@@ -432,48 +444,48 @@ class PCN(JaxComponent):
     >> self.e_Qtarget.advance_state
 )
 
-                              processes = (reset_process, advance_process, evolve_process, project_process)
+                processes = (reset_process, advance_process, evolve_process, project_process)
 
                 self._dynamic(processes)
     def _dynamic(self, processes):  # create dynamic commands for transformer circuit
-    vars = self.circuit.get_components(
-        # Rate cells
-        "q_qkv", "q_score", "q_fc1", "q_fc2", "q_out", "qtarget_logits","e_Qtarget"
+        vars = self.circuit.get_components(
+            # Rate cells
+            "q_qkv", "q_score", "q_fc1", "q_fc2", "q_out", "qtarget_logits","e_Qtarget"
 
-        # Error cells
-        "e_score", "e_fc1", "e_fc2", "e_zout", "e_target_logits",
+            # Error cells
+            "e_score", "e_fc1", "e_fc2", "e_zout", "e_target_logits",
 
-        # Projection StaticSynapses
-        "Qqkv_score", "Qscore_fc1", "Qfc1_fc2", "Qfc2_out", "Qout_target",
+            # Projection StaticSynapses
+            "Qqkv_score", "Qscore_fc1", "Qfc1_fc2", "Qfc2_out", "Qout_target",
 
-        # Hebbian forward synapses
-        "Wqkv_score", "Wscore_fc1", "Wfc1_fc2", "Wfc2_zout", "Wout_target",
+            # Hebbian forward synapses
+            "Wqkv_score", "Wscore_fc1", "Wfc1_fc2", "Wfc2_zout", "Wout_target",
 
-        # Error synapse adapters
-        "Efc1_score", "Efc2_fc1", "Eout_fc2", "Etarget_out",
+            # Error synapse adapters
+            "Efc1_score", "Efc2_fc1", "Eout_fc2", "Etarget_out",
 
-        # Main dynamical z-states
-        "z_qkv", "z_score", "z_fc1", "z_fc2", "zout", "target_logits"
-    )
-    (self.q_qkv, self.q_score, self.q_fc1, self.q_fc2, self.q_out, self.qtarget_logits, self.e_Qtarget,
-    self.e_score, self.e_fc1, self.e_fc2, self.e_zout, self.e_target_logits,
-    self.Qqkv_score, self.Qscore_fc1, self.Qfc1_fc2, self.Qfc2_out, self.Qout_target,
-    self.Wqkv_score, self.Wscore_fc1, self.Wfc1_fc2, self.Wfc2_zout, self.Wout_target,
-    self.Efc1_score, self.Efc2_fc1, self.Eout_fc2, self.Etarget_out,
-    self.z_qkv, self.z_score, self.z_fc1, self.z_fc2, self.zout, self.target_logits) = vars
+            # Main dynamical z-states
+            "z_qkv", "z_score", "z_fc1", "z_fc2", "zout", "target_logits"
+        )
+        (self.q_qkv, self.q_score, self.q_fc1, self.q_fc2, self.q_out, self.qtarget_logits, self.e_Qtarget,
+        self.e_score, self.e_fc1, self.e_fc2, self.e_zout, self.e_target_logits,
+        self.Qqkv_score, self.Qscore_fc1, self.Qfc1_fc2, self.Qfc2_out, self.Qout_target,
+        self.Wqkv_score, self.Wscore_fc1, self.Wfc1_fc2, self.Wfc2_zout, self.Wout_target,
+        self.Efc1_score, self.Efc2_fc1, self.Eout_fc2, self.Etarget_out,
+        self.z_qkv, self.z_score, self.z_fc1, self.z_fc2, self.zout, self.target_logits) = vars
 
-    self.nodes = vars
-    
+        self.nodes = vars
+        
 
-    self.nodes = vars
+        self.nodes = vars
 
-    reset_proc, advance_proc, evolve_proc, project_proc = processes
+        reset_proc, advance_proc, evolve_proc, project_proc = processes
 
-    # Add commands to the circuit
-    self.circuit.wrap_and_add_command(jit(reset_proc.pure), name="reset")
-    self.circuit.wrap_and_add_command(jit(advance_proc.pure), name="advance")
-    self.circuit.wrap_and_add_command(jit(project_proc.pure), name="project")
-    self.circuit.wrap_and_add_command(jit(evolve_proc.pure), name="evolve")
+        # Add commands to the circuit
+        self.circuit.wrap_and_add_command(jit(reset_proc.pure), name="reset")
+        self.circuit.wrap_and_add_command(jit(advance_proc.pure), name="advance")
+        self.circuit.wrap_and_add_command(jit(project_proc.pure), name="project")
+        self.circuit.wrap_and_add_command(jit(evolve_proc.pure), name="evolve")
 
 
     def save_to_disk(self, params_only=False):
@@ -557,7 +569,7 @@ class PCN(JaxComponent):
         EFE=0
         y_mu=0
         if adapt_synapses:
-            for ts in range(0.self.T):
+            for ts in range(0,self.T):
                 self.circuit.clamp_input(obs)
                 self.circuit.clamp_target(_lab)
                 self.circuit.advance(t=ts,dt=1.)
