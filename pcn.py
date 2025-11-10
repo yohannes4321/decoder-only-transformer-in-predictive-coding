@@ -1,10 +1,13 @@
 from Dataloader import vocab_size
+from ngclearn.utils.io_utils import makedir
 from ngcsimlib.context import Context
 from ngclearn.utils import JaxProcess
 import ngclearn.utils.weight_distribution as dist
 from ngclearn.utils.model_utils import drop_out,softmax,gelu,layer_normalize
 from ngclearn.utils.optim import adam
 from jax import jit,random,numpy as jnp 
+import jax
+from ngclearn.components import GaussianErrorCell as ErrorCell, RateCell, HebbianSynapse, StaticSynapse
 # from ngclearn.com.jaxComponent import JaxComponent
 from jax import numpy as jnp, random, jit
 from flax import nnx
@@ -18,35 +21,44 @@ batch_size=32
 
 
 
-class TokenAndPostionalEmbedding(nnx.Module):
-    def __init__(self,vocab_size,n_embd,block_size,dropout,batch_size,key,**kwargs):
-        self.block_size=block_size
-        self.vocab_size = vocab_size
-        self.n_embd=n_embd
-        rngs=nnx.Rngs(default=key)
-        self.token_embed=nnx.Embed(num_embedding=vocab_size,features=n_embd,rngs=rngs)
-        self.pos_emb=nnx.Embed(num_embedding=block_size,features=n_embd,rngs=rngs)
-      
-    def __call__(self,x):
-        maxlen=jnp.shape(x)[-1]
-        x=self.token_embed(x)
-        postions=jnp.arange(start=0,stop=maxlen,step=1)
-        y=self.pos_emb(postions)
-        return x+ y
+import jax.numpy as jnp
+from flax import linen as nn
+
+class TokenAndPositionalEmbedding(nn.Module):
+    vocab_size: int
+    n_embd: int
+    block_size: int
+    dropout_rate: float = 0.0
+
+    @nn.compact
+    def __call__(self, x, train=True):
+        token_embed = nn.Embed(num_embeddings=self.vocab_size, features=self.n_embd)(x)
+        positions = jnp.arange(x.shape[-1])
+        pos_embed = nn.Embed(num_embeddings=self.block_size, features=self.n_embd)(positions)
+        pos_embed = jnp.expand_dims(pos_embed, axis=0)
+        pos_embed = jnp.broadcast_to(pos_embed, token_embed.shape)
+        out = token_embed + pos_embed
+
+        # Apply dropout if needed
+        if self.dropout_rate > 0 and train:
+            out = nn.Dropout(rate=self.dropout_rate)(out, deterministic=not train)
+        return out
+
+
 
 
 
 
 
 class feedforward_1():
-    def __init__(self,):
-        dkey1, dkey2 = random.split(dkey, 2)
+    def __init__(self,dim,act_fx,tau_m,eta,wlb,wub,optim_type,subkeys):
+        
         with Context("feedforward_1") as feedforward_1:
           
-            self.emlp_1=ErrorCell("emlp_1", n_units=hid1_dim)
-            self.mlp_1=RateCell("mlp_1",n_units=hid1,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type='euler')
-            self.Whid1=HebbianSynapse(
-                    "Whid1", shape=(hid1, 4* hid1), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+            self.emlp_1=ErrorCell("emlp_1", n_units=dim)
+            self.mlp_1=RateCell("mlp_1",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type='euler')
+            self.Whid0=HebbianSynapse(
+                    "Wdim", shape=(dim, 4* dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
             # self.layernorm_2=nn.LayerNorm(epsilon=1e-6, use_scale=True, use_bias=True)
@@ -55,12 +67,12 @@ class feedforward_1():
             self.emlp_1.target << self.mlp_1.z
             advance_process=(JaxProcess(name="advance_process")
                             >> self.mlp_1.advance_state
-                            >> self.Whid1.advance_state
+                            >> self.Wdim.advance_state
             
             )
             reset_process = (JaxProcess(name="reset_process")
                              >> self.mlp_1.reset
-                            >> self.Whid1.reset
+                            >> self.Wdim.reset
             )
         def _dynamic(self,process):
             @Context.dynamicCommand
@@ -68,28 +80,28 @@ class feedforward_1():
                 self.mlp_1.j.set(x)
                 
 class feedforward_2():
-    def __init__(self,):
+    def __init__(self,dim,act_fx,tau_m,eta,wlb,wub,optim_type,subkeys):
         dkey1, dkey2 = random.split(dkey, 2)
         with Context("feedforward_2") as feedforward_2:
 
-            self.emlp_2=ErrorCell("emlp_2", n_units=hid1_dim)
-            self.mlp_2=RateCell("mlp_2",n_units=hid1,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type='euler')
-            self.Whid2=HebbianSynapse(
-                    "Whid2", shape=(hid1*4 , hid1), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+            self.emlp_2=ErrorCell("emlp_2", n_units=dim)
+            self.mlp_2=RateCell("mlp_2",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type='euler')
+            self.Wdim=HebbianSynapse(
+                    "Wdim", shape=(dim*4 , dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
-            self.Whid1.inputs << self.mlp_1.zF
-            self.emlp_2.mu << self.Whid1.outputs
+            self.Wdim.inputs << self.mlp_1.zF
+            self.emlp_2.mu << self.Wdim.outputs
             self.emlp_2.target << self.mlp_2.z
 
             advance_process=(JaxProcess(name="advance_process")
                             >> self.mlp_2.advance_state
-                            >> self.Whid2.advance_state
+                            >> self.Wdim.advance_state
             
             )
             reset_process = (JaxProcess(name="reset_process")
                              >> self.mlp_2.reset
-                            >> self.Whid2.reset
+                            >> self.Wdim.reset
             )
             def _dynamic(self,process):
                 @Context.dynamicCommand
@@ -99,10 +111,10 @@ class feedforward_2():
 
 
 class selfAttention :
-    @bind(jax.jit,static_argnums=[5,6])
-    def masked_fill(self,x: jax.Array,mask: jax.Array,value=0) -> jax.Array:
+    # @bind(jax.jit,static_argnums=[5,6])
+    def masked_fill(self,x,mask: jax.Array,value=0) -> jax.Array:
             return jnp.where(mask,jnp.broadcast_to(value,x.shape),x)
-    def __init__(self,dkey,x1: jax.Array,mask: jax.Array,n_heads: int=8,drop_out: float =0.5) -> jax.Array:
+    def __init__(self,dkey,x1,mask: jax.Array,n_heads: int=8,drop_out: float =0.5) -> jax.Array:
         """Args:
             dkey: JAX key to trigger any internal noise (drop-out)
 
@@ -121,6 +133,7 @@ class selfAttention :
         Returns:
             jax.Array: output of self-attention
         """
+        
         with Context("attention") as attention:
 
             B,T,Dq=x1.shape
@@ -139,12 +152,12 @@ class selfAttention :
             head_size= embeding_shape // n_heads
             q=q.reshape((B,T,n_heads,head_size)).transpose([0,2,1,3])
             k=k.reshape((B,T,n_heads,head_size)).transpose([0,2,1,3])
-            v=v.reshpe((B,T,n_heads,head_size)).transpose([0,2,1,3])
+            v=v.reshape((B,T,n_heads,head_size)).transpose([0,2,1,3])
             score=jnp.einsum("BHTE,BHSE ->BHTS",q,k) / jnp.sqrt(head_size)
             if mask is not None:
                 Tq,Tk=q.shape[2],k.shape[2]
                 assert mask.shape== ((B,Tq,Tk),(mask.shape,(B,Tq,Tk)))
-                score=masked_fill(score,mask,value= - jnp.inf)
+                score=self.masked_fill(score,mask,value= - jnp.inf)
             score=jax.nn.softmax(score,axis=-1) #(B,H,T,S)
             score=score.astype(q.dtype)
 
@@ -168,15 +181,13 @@ class selfAttention :
             )
 
 class PCN():
-    def __init__(self, dkey, in_dim=1, out_dim=1, hid1_dim=128, hid2_dim=64, T=10,
+    def __init__(self, dkey, in_dim=1, out_dim=1, dim=128,  T=10,
                  dt=1., tau_m=10., act_fx="tanh", eta=0.001, exp_dir="exp",
                  model_name="pc_disc", loadDir=None, **kwargs):
 
 
 
-    
-
-        hid1,hid1_dim,hid2,hid2_dim,hid3,hid4=hid1_dim
+       
         self.exp_dir = exp_dir
         self.model_name = model_name
         self.nodes = None
@@ -192,9 +203,16 @@ class PCN():
         wlb = -0.3
         wub = 0.3
         wub = 0.3
-        self.embedding=TokenAndPostionalEmbedding(vocab_size,n_embd,block_size,dropout,batch_size,dkey)
-        self.feedforward_1=feedforward_1()
-        self.feedforward_2=feedforward_2()
+        self.embedding = TokenAndPositionalEmbedding(
+    vocab_size=vocab_size,
+    n_embd=n_embd,
+    block_size=block_size,
+    dropout_rate=drop_out
+)
+
+        print(self.embedding)
+        self.feedforward_1=feedforward_1(dim,act_fx,tau_m,eta,wlb,wub,optim_type,subkeys)
+        self.feedforward_2=feedforward_2(dim,act_fx,tau_m,eta,wlb,wub,optim_type,subkeys)
         self.layer_normalize=layer_normalize()
         self.attention=selfAttention(dkey,x1 ,mask ,n_heads=8,drop_out=0.5)
 
@@ -204,38 +222,38 @@ class PCN():
             with Context("Circuit") as self.circuit:
                 self.z_qkv=RateCell("z_qkv",n_units=in_dim,tau_m=0,act_fx="identity")
 
-                self.z_score=RateCell("z_score",n_units=hid1,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
+                self.z_score=RateCell("z_score",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
 
-                self.e_score=ErrorCell("e_score",n_units=hid1)
-                self.z_fc1=RateCell("z_fc1",n_units=hid2 *4,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type="euler")
-                self.e_fc1=ErrorCell("e_fc1",n_units=hid2)
-                self.z_fc2=RateCell("z_fc2",n_units=hid3,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
-                self.e_fc2=ErrorCell("e_fc2",n_units=hid3)
-                self.zout=RateCell("zout",n_units=hid4,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
-                self.e_zout=ErrorCell("e_zout",n_units=hid4)
+                self.e_score=ErrorCell("e_score",n_units=dim)
+                self.z_fc1=RateCell("z_fc1",n_units=dim *4,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type="euler")
+                self.e_fc1=ErrorCell("e_fc1",n_units=dim)
+                self.z_fc2=RateCell("z_fc2",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
+                self.e_fc2=ErrorCell("e_fc2",n_units=dim)
+                self.zout=RateCell("zout",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
+                self.e_zout=ErrorCell("e_zout",n_units=dim)
                 self.target_logits=RateCell("target_logits",n_units=out_dim,tau_m=0.,act_fx="identity")
                 self.e_target_logits=ErrorCell("e_target_logits",n_units=out_dim)
 
 
                 # connection
                 self.Wqkv_score = HebbianSynapse(
-                    "Wqkv_score", shape=(in_dim, hid1_dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    "Wqkv_score", shape=(in_dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
                 self.Wscore_fc1 = HebbianSynapse(
-                    "Wscore_fc1", shape=(hid1, hid2), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    "Wscore_fc1", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
                 self.Wfc1_fc2 = HebbianSynapse(
-                    "Wfc1_fc2", shape=(hid2, hid3), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    "Wfc1_fc2", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
                 self.Wfc2_zout = HebbianSynapse(
-                    "Wfc2_zout", shape=(hid3, hid4), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    "Wfc2_zout", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
                 self.Wout_target = HebbianSynapse(
-                    "Wout_target", shape=(hid4,out_dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    "Wout_target", shape=(dim,out_dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
 
@@ -243,16 +261,16 @@ class PCN():
 
                 #feedback
                 self.Efc1_score = StaticSynapse(
-                    "Efc1_score", shape=(hid2, hid1), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                    "Efc1_score", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
                 )
                 self.Efc2_fc1 = StaticSynapse(
-                    "Efc2_fc1", shape=(hid3, hid2), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                    "Efc2_fc1", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
                 )
                 self.Eout_fc2 = StaticSynapse(
-                    "Eout_fc2", shape=(hid4, hid3), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                    "Eout_fc2", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
                 )
                 self.Etarget_out = StaticSynapse(
-                    "Etarget_out", shape=(hid4, out_dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                    "Etarget_out", shape=(dim, out_dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
                 )
 
                 # assigning class 
@@ -321,10 +339,10 @@ class PCN():
 
                 # --- RATE CELLS ---
                 self.q_qkv = RateCell("q_qkv", n_units=in_dim, tau_m=0., act_fx="identity")
-                self.q_score = RateCell("q_score", n_units=hid1, tau_m=0., act_fx=act_fx)
-                self.q_fc1 = RateCell("q_fc1", n_units=hid2, tau_m=0., act_fx=act_fx)
-                self.q_fc2 = RateCell("q_fc2", n_units=hid3, tau_m=0., act_fx=act_fx)
-                self.q_out = RateCell("q_out", n_units=hid4, tau_m=0., act_fx=act_fx)
+                self.q_score = RateCell("q_score", n_units=dim, tau_m=0., act_fx=act_fx)
+                self.q_fc1 = RateCell("q_fc1", n_units=dim, tau_m=0., act_fx=act_fx)
+                self.q_fc2 = RateCell("q_fc2", n_units=dim, tau_m=0., act_fx=act_fx)
+                self.q_out = RateCell("q_out", n_units=dim, tau_m=0., act_fx=act_fx)
                 self.qtarget_logits = RateCell("qtarget_logits", n_units=out_dim, tau_m=0., act_fx="identity")
 
                 # --- ERROR CELL ---
@@ -332,23 +350,23 @@ class PCN():
 
                 # --- STATIC SYNAPSES ---
                 self.Qqkv_score = StaticSynapse(
-                    "Qqkv_score", shape=(in_dim, hid1),
+                    "Qqkv_score", shape=(in_dim, dim),
                     bias_init=dist.constant(value=0.), key=subkeys[0]
                 )
                 self.Qscore_fc1 = StaticSynapse(
-                    "Qscore_fc1", shape=(hid1, hid2),
+                    "Qscore_fc1", shape=(dim, dim),
                     bias_init=dist.constant(value=0.), key=subkeys[1]
                 )
                 self.Qfc1_fc2 = StaticSynapse(
-                    "Qfc1_fc2", shape=(hid2, hid3),
+                    "Qfc1_fc2", shape=(dim, dim),
                     bias_init=dist.constant(value=0.), key=subkeys[2]
                 )
                 self.Qfc2_out = StaticSynapse(
-                    "Qfc2_out", shape=(hid3, hid4),
+                    "Qfc2_out", shape=(dim, dim),
                     bias_init=dist.constant(value=0.), key=subkeys[3]
                 )
                 self.Qout_target = StaticSynapse(
-                    "Qout_target", shape=(hid4, out_dim),
+                    "Qout_target", shape=(dim, out_dim),
                     bias_init=dist.constant(value=0.), key=subkeys[4]
                 )
 
