@@ -1,4 +1,5 @@
 Data/*.csv
-__pycache__
+__pycache__/
+*.pyc
 pcn_model.py
 README.md 
