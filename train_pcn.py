@@ -1,10 +1,14 @@
 from jax import numpy as jnp, random
 import time, os
+from ngclearn.utils.model_utils import drop_out,softmax,gelu,layer_normalize
 from Dataloader import BPETokenizer, PennTreeBankDataset, create_dataloader
-from pcn import PCN  # or your NGC/decoder transformer model
 from ngclearn.utils.metric_utils import measure_CatNLL
 import numpy as np
-
+from EmbeddingRateCell import Embedding
+from ngcsimlib.context import Context
+import jax
+from jax import random as jax_random
+from pcn import PCN
 # -----------------------------
 # Hyperparameters
 # -----------------------------
@@ -14,6 +18,8 @@ N_ITER = 2
 LEARNING_RATE = 1e-3
 SAVE_POINT = 1
 VERBOSITY = 1
+n_embed=512
+dim=n_embed
 
 # -----------------------------
 # Tokenizer and Data
@@ -31,23 +37,12 @@ val_loader   = create_dataloader(val_dataset, BATCH_SIZE, shuffle=False, pad_tok
 # -----------------------------
 # Model setup
 # -----------------------------
-dkey = random.PRNGKey(1234)
 
+dkey = random.PRNGKey(1234)   # shape (2,)
 
-x_dim = BLOCK_SIZE
-y_dim = vocab_size
-
-print(f"Building Decoder-only Transformer: vocab={vocab_size}, block={BLOCK_SIZE}")
-model = PCN(
-    dkey,
-    x_dim, y_dim,
-    hid1_dim=64, hid2_dim=64,
-    T=2, dt=1., tau_m=25.,
-    act_fx="sigmoid", eta=LEARNING_RATE,
-    exp_dir="exp", model_name="decoder_only_pcn"
-)
-model.save_to_disk()
-print("--- Model initialized and saved ---")
+model=PCN(dkey=dkey,dim=dim,T=10,dt=1.,tau_m=10., act_fx="tanh", eta=0.001, exp_dir="exp",
+                 model_name="pc_disc", batch_size=BATCH_SIZE,loadDir=None)
+print("model run ")
 
 # -----------------------------
 # Training / Evaluation
@@ -64,17 +59,6 @@ def compute_loss(logits, targets, pad_token_id=0):
     nll = jnp.sum(nll * mask) / jnp.sum(mask)
     return nll
 
-def evaluate(model, loader):
-    total_loss = 0.0
-    total_tokens = 0
-    for batch in loader:
-        Xb, Yb = batch["input_ids"], batch["target_ids"]
-        logits, _, _ = model.process(obs=Xb, lab=None, adapt_synapses=False)
-        loss = compute_loss(logits, Yb)
-        total_loss += loss * Xb.shape[0]
-        total_tokens += Xb.shape[0]
-    return float(total_loss / total_tokens)
-
 # -----------------------------
 # Main Training Loop
 # -----------------------------
@@ -87,22 +71,38 @@ for epoch in range(N_ITER):
 
     for batch in train_loader:
         Xb, Yb = batch["input_ids"], batch["target_ids"]
-        # Forward + backward
-        logits, _, efe = model.process(obs=Xb, lab=Yb, adapt_synapses=True)
-        loss = compute_loss(logits, Yb)
-        total_loss += loss
-        n_batches += 1
+        
+    # Show first 10 tokens of first sample
+        
+        # Use the pre-created embedding cell
+        E.j.set(Xb)           # Set the input tokens
+        result=E.advance_state()     # Compute embeddings
+        embeddings = result  # Get output of shape (batch_size, seq_len, 512)
 
-        if VERBOSITY >= 1 and n_batches % 10 == 0:
-            print(f"Epoch {epoch} | Batch {n_batches} | Loss {float(loss):.4f}")
+        
+        
+        print(f"Embedding shape: {embeddings.shape}")
+        print("First sample embedding stats:")
+        # print(embeddings)
+        break
+        
+        # Show actual embedding values for first token
+        # if embeddings[0, 0, 0] != 0:  # If not zero, show some values
+        #     print("First few embedding values for first token:")
+        #     print(embeddings[0, 0, :8])  # First 8 dimensions
 
-    avg_train_loss = total_loss / max(1, n_batches)
-    val_loss = evaluate(model, val_loader)
-    print(f"Epoch {epoch} done | Train Loss={float(avg_train_loss):.4f} | Val Loss={float(val_loss):.4f}")
+        # # Reset for next batch (optional - depends on your use case)
+        # # E.reset()
 
-    if (epoch + 1) % SAVE_POINT == 0:
-        model.save_to_disk(params_only=True)
+        # n_batches += 1
+
+        # if VERBOSITY >= 1 and n_batches % 10 == 0:
+        #     print(f"Epoch {epoch} | Batch {n_batches} | Processed {Xb.shape} inputs")
+
+        # if n_batches >= 2:  # Just test with 2 batches for now
+        #     break
+
+    break  # Just run one epoch for testing
 
 sim_time = time.time() - sim_start_time
 print(f"Training completed in {sim_time/60:.2f} min.")
-
