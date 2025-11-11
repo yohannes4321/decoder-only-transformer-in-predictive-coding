@@ -311,6 +311,105 @@ class PCN():
                 #wire last error projection cell to target logit
                 self.qError_target_logit.target << self.qtarget_logits.z
 
+                reset_process = (JaxProcess(name="reset_process")
+
+                            >> self.q_embed.reset
+                            >> self.q_inputk.reset
+                            >> self.q_inputv.reset
+                            >> self.q_inputq.reset
+                            >> self.q_Attentionscore.reset
+                            >> self.q_mlp1.reset
+                            >> self.q_mlp2.reset
+                            >> self.q_out.reset
+                            >> self.qtarget_logits.reset
+                            >> self.qError_target_logit.reset
+
+                            >> self.Embedding.reset
+                            >> self.Attention.inputs_q.reset
+                            >> self.Attention.input_q_ErrorCell.reset
+                            >> self.Attention.inputs_k.reset
+                            >> self.Attention.input_k_ErrorCell.reset
+                            >> self.Attention.inputs_v.reset
+                            >> self.Attention.input_v_ErrorCell.reset
+                            >> self.Attention.Attentionout_Error.reset
+                            >> self.MLP.mlp_1_error.reset
+                            >> self.MLP.mlp_1.reset
+                            >> self.MLP.mlp_2_error.reset
+                            >> self.MLP.mlp_2.reset
+                            >> self.z_out_error.reset
+                            >> self.z_out.reset
+                            >> self.target_logit_error.reset
+
+                        )
+
+
+                evolve_process = (
+                        JaxProcess(name="evolve_process")
+
+                        >> self.Embedding.W_emb_q.evolve
+                        >> self.Embedding.W_emb_k.evolve
+                        >> self.Embedding.W_emb_v.evolve
+
+                        >> self.Attention.inputs_k_attentionout.evolve
+                        >> self.Attention.inputs_q_attentionout.evolve
+                        >> self.Attention.inputs_v_attentionout.evolve
+
+                        >> self.Attention.attention_to_mlp.evolve
+
+                        >> self.MLP.mlp1_mlp2.evolve
+                        >> self.MLP.mlp2_zout.evolve
+
+                        >> self.zout_targetlogit.evolve
+                    )
+
+                project_process = (
+                    JaxProcess(name="project_process")
+
+                    >> self.q_embed.advance_state
+
+                    # embed → K
+                    >> self.Qembed_inputk.advance_state
+                    >> self.q_inputk.advance_state
+
+                    # embed → V
+                    >> self.Qembed_inputv.advance_state
+                    >> self.q_inputv.advance_state
+
+                    # embed → Q
+                    >> self.Qembed_inputq.advance_state
+                    >> self.q_inputq.advance_state
+
+                    # K → AttentionScore
+                    >> self.Qinputk_attentionscore.advance_state
+                    # Q → AttentionScore
+                    >> self.Qinputq_attentionscore.advance_state
+                    # V → AttentionScore
+                    >> self.Qinputv_attentionscore.advance_state
+
+                    >> self.q_Attentionscore.advance_state
+
+                    # AttentionScore → MLP1
+                    >> self.QAttention_mlp1.advance_state
+                    >> self.q_mlp1.advance_state
+
+                    # MLP1 → MLP2
+                    >> self.Qmlp1_mlp2.advance_state
+                    >> self.q_mlp2.advance_state
+
+                    # MLP2 → out
+                    >> self.Qmlp2_out.advance_state
+                    >> self.q_out.advance_state
+
+                    # out → target logits
+                    >> self.Qout_target.advance_state
+                    >> self.qtarget_logits.advance_state
+
+                    # final error cell
+                    >> self.qError_target_logit.advance_state
+                )
+
+
+
 
 
 
