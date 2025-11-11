@@ -1,5 +1,6 @@
 from Dataloader import vocab_size
 from ngclearn.utils.io_utils import makedir
+from ngclearn.utils.io_utils import makedir
 from ngcsimlib.context import Context
 from ngclearn.utils import JaxProcess
 import ngclearn.utils.weight_distribution as dist
@@ -24,9 +25,9 @@ batch_size=32
 n_heads=8
 dropout_rate=0.5
 class PCN():
-    def __init__(self,dkey,dim, in_dim=1, out_dim=1,   T=10,
-                 dt=1., tau_m=10., act_fx="tanh", eta=0.001,exp_dir="exp",
-                 model_name="pc_disc",batch_size=batch_size, loadDir=None, **kwargs):
+    def __init__(self, dkey, in_dim=1, out_dim=1, hid1_dim=128, hid2_dim=64, T=10,
+                 dt=1., tau_m=10., act_fx="tanh", eta=0.001, exp_dir="exp",
+                 model_name="pc_disc", loadDir=None, **kwargs):
 
 
 
@@ -187,19 +188,19 @@ class PCN():
 
 
 
-#                 #feedback
-#                 self.Efc1_score = StaticSynapse(
-#                     "Efc1_score", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-#                 )
-#                 self.Efc2_fc1 = StaticSynapse(
-#                     "Efc2_fc1", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-#                 )
-#                 self.Eout_fc2 = StaticSynapse(
-#                     "Eout_fc2", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-#                 )
-#                 self.Etarget_out = StaticSynapse(
-#                     "Etarget_out", shape=(dim, out_dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-#                 )
+                #feedback
+                self.Efc1_score = StaticSynapse(
+                    "Efc1_score", shape=(hid2, hid1), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                )
+                self.Efc2_fc1 = StaticSynapse(
+                    "Efc2_fc1", shape=(hid3, hid2), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                )
+                self.Eout_fc2 = StaticSynapse(
+                    "Eout_fc2", shape=(hid4, hid3), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                )
+                self.Etarget_out = StaticSynapse(
+                    "Etarget_out", shape=(hid4, out_dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                )
 
 #                 # assigning class 
                 
@@ -274,40 +275,38 @@ class PCN():
 # #                 # self.Wout_target << self.zout.zF
 # #                 # self.Wout_target << self.e_target_logits.dmu
 
-# # q 
-# # z 
-# #                 # --- RATE CELLS ---
-# #                 self.q_qkv = RateCell("q_qkv", n_units=in_dim, tau_m=0., act_fx="identity")
-# #                 self.q_score = RateCell("q_score", n_units=dim, tau_m=0., act_fx=act_fx)
-# #                 self.q_fc1 = RateCell("q_fc1", n_units=dim, tau_m=0., act_fx=act_fx)
-# #                 self.q_fc2 = RateCell("q_fc2", n_units=dim, tau_m=0., act_fx=act_fx)
-# #                 self.q_out = RateCell("q_out", n_units=dim, tau_m=0., act_fx=act_fx)
-# #                 self.qtarget_logits = RateCell("qtarget_logits", n_units=out_dim, tau_m=0., act_fx="identity")
+                # --- RATE CELLS ---
+                self.q_qkv = RateCell("q_qkv", n_units=in_dim, tau_m=0., act_fx="identity")
+                self.q_score = RateCell("q_score", n_units=hid1, tau_m=0., act_fx=act_fx)
+                self.q_fc1 = RateCell("q_fc1", n_units=hid2, tau_m=0., act_fx=act_fx)
+                self.q_fc2 = RateCell("q_fc2", n_units=hid3, tau_m=0., act_fx=act_fx)
+                self.q_out = RateCell("q_out", n_units=hid4, tau_m=0., act_fx=act_fx)
+                self.qtarget_logits = RateCell("qtarget_logits", n_units=out_dim, tau_m=0., act_fx="identity")
 
 # #                 # --- ERROR CELL ---
 # #                 self.e_Qtarget = ErrorCell("e_Qtarget", n_units=out_dim)
 
-# #                 # --- STATIC SYNAPSES ---
-# #                 self.Qqkv_score = StaticSynapse(
-# #                     "Qqkv_score", shape=(in_dim, dim),
-# #                     bias_init=dist.constant(value=0.), key=subkeys[0]
-# #                 )
-# #                 self.Qscore_fc1 = StaticSynapse(
-# #                     "Qscore_fc1", shape=(dim, dim),
-# #                     bias_init=dist.constant(value=0.), key=subkeys[1]
-# #                 )
-# #                 self.Qfc1_fc2 = StaticSynapse(
-# #                     "Qfc1_fc2", shape=(dim, dim),
-# #                     bias_init=dist.constant(value=0.), key=subkeys[2]
-# #                 )
-# #                 self.Qfc2_out = StaticSynapse(
-# #                     "Qfc2_out", shape=(dim, dim),
-# #                     bias_init=dist.constant(value=0.), key=subkeys[3]
-# #                 )
-# #                 self.Qout_target = StaticSynapse(
-# #                     "Qout_target", shape=(dim, out_dim),
-# #                     bias_init=dist.constant(value=0.), key=subkeys[4]
-# #                 )
+                # --- STATIC SYNAPSES ---
+                self.Qqkv_score = StaticSynapse(
+                    "Qqkv_score", shape=(in_dim, hid1),
+                    bias_init=dist.constant(value=0.), key=subkeys[0]
+                )
+                self.Qscore_fc1 = StaticSynapse(
+                    "Qscore_fc1", shape=(hid1, hid2),
+                    bias_init=dist.constant(value=0.), key=subkeys[1]
+                )
+                self.Qfc1_fc2 = StaticSynapse(
+                    "Qfc1_fc2", shape=(hid2, hid3),
+                    bias_init=dist.constant(value=0.), key=subkeys[2]
+                )
+                self.Qfc2_out = StaticSynapse(
+                    "Qfc2_out", shape=(hid3, hid4),
+                    bias_init=dist.constant(value=0.), key=subkeys[3]
+                )
+                self.Qout_target = StaticSynapse(
+                    "Qout_target", shape=(hid4, out_dim),
+                    bias_init=dist.constant(value=0.), key=subkeys[4]
+                )
 
 # #                 # --- Wire the network ---
 # #                 self.Qqkv_score.inputs << self.q_qkv.zF

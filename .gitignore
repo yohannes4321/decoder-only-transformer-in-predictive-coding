@@ -1,3 +1,4 @@
 Data/*.csv
 __pycache__
 pcn_model.py
+README.md 
