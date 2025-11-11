@@ -25,7 +25,7 @@ batch_size=32
 n_heads=8
 dropout_rate=0.5
 class PCN():
-    def __init__(self, dkey, in_dim=1, out_dim=1, hid1_dim=128, hid2_dim=64, T=10,
+    def __init__(self, dkey, dim,T=10,
                  dt=1., tau_m=10., act_fx="tanh", eta=0.001, exp_dir="exp",
                  model_name="pc_disc", loadDir=None, **kwargs):
 
@@ -70,7 +70,7 @@ class PCN():
     block_size,
     drop_out,
     batch_size,
-    eta,                # ✅ FIXED: must pass these 4
+    eta,                
     wlb,
     wub,
     optim_type
@@ -83,6 +83,9 @@ class PCN():
                         "zout_targetlogit", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                         bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                     )
+                self.Etargetlogit_zout = StaticSynapse(
+                    "Etargetlogit_zout", shape=(dim, dim), bias_init=dist.constant(value=0.), key=subkeys[0]
+                )
                 self.target_logit_error=ErrorCell("target_logit_error", n_units=dim)
                 self.target_logit =RateCell("target_logit",n_units=dim,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type='euler')
                
@@ -93,19 +96,33 @@ class PCN():
                 self.Embedding.W_emb_q.inputs << self.Embedding.emb_out
                 self.Attention.inputs_q.j << self.Embedding.W_emb_q.outputs # z is needed to make attention compuation 
                 self.Attention.input_q_ErrorCell.mu << self.Embedding.W_emb_q.outputs
-                self.Attention.input_q_ErrorCell.target << self.Attention.Attention_out.z
+                self.Attention.input_q_ErrorCell.target << self.Attention.inputs_q.z
 
                 self.Embedding.W_emb_k.inputs << self.Embedding.emb_out
                 self.Attention.inputs_k.j << self.Embedding.W_emb_k.outputs
                 self.Attention.input_k_ErrorCell.mu << self.Embedding.W_emb_k.outputs
-                self.Attention.input_k_ErrorCell.target << self.Attention.Attention_out.z
+                self.Attention.input_k_ErrorCell.target << self.Attention.inputs_k.z
 
 
                 self.Embedding.W_emb_v.inputs << self.Embedding.emb_out
                 self.Attention.inputs_v.j << self.Embedding.W_emb_v.outputs
                 self.Attention.input_v_ErrorCell.mu << self.Embedding.W_emb_v.outputs
-                self.Attention.input_v_ErrorCell.target << self.Attention.Attention_out.z
+                self.Attention.input_v_ErrorCell.target << self.Attention.inputs_v.z
 
+                # TODO I may be correct or overwrite it and only take inputs_v_attentionout 
+                self.Attention.inputs_k_attentionout.inputs << self.Attention.inputs_k.zF
+                self.Attention.Attentionout_Error.mu << self.Attention.inputs_k_attentionout.outputs
+                self.Attention.Attentionout_Error.target << self.Attention.Attention_out.z
+
+                
+                self.Attention.inputs_q_attentionout.inputs << self.Attention.inputs_q.zF
+                self.Attention.Attentionout_Error.mu << self.Attention.inputs_q_attentionout.outputs
+                self.Attention.Attentionout_Error.target << self.Attention.Attention_out.z
+                
+                self.Attention.inputs_v_attentionout.inputs << self.Attention.inputs_v.zF
+                self.Attention.Attentionout_Error.mu << self.Attention.inputs_v_attentionout.outputs
+                self.Attention.Attentionout_Error.target << self.Attention.Attention_out.z
+                #
                 self.Attention.attention_to_mlp.inputs << self.Attention.Attention_out.zF
                 self.MLP.mlp_1_error.mu << self.Attention.attention_to_mlp.outputs
                 self.MLP.mlp_1_error.target << self.MLP.mlp_1.z
@@ -115,14 +132,228 @@ class PCN():
                 self.MLP.mlp_2_error.mu << self.MLP.mlp1_mlp2.outputs
                 self.MLP.mlp_2_error.target << self.MLP.mlp_2.z
 
-                self.MLP.mlp_zout.inputs << self.MLP.mlp_2.zF
-                self.z_out_error.mu << self.MLP.mlp_zout.outputs
+                self.MLP.mlp2_zout.inputs << self.MLP.mlp_2.zF
+                self.z_out_error.mu << self.MLP.mlp2_zout.outputs
                 self.z_out_error.target << self.z_out.z 
 
                 self.zout_targetlogit.inputs << self.z_out.zF
                 self.target_logit_error.mu << self.zout_targetlogit.outputs
                 self.target_logit_error.target << self.target_logit.z
 
+                #TODO feedback start here 
+                #feedback input_k,q,v and attention out
+                self.Attention.Eattentionout_input_k.inputs << self.Attention.Attentionout_Error.dmu
+                self.Attention.inputs_k.j  << self.Attention.Eattentionout_input_k.outputs
+                self.Attention.inputs_k.j_td << self.Attention.input_k_ErrorCell.dtarget
+
+
+                self.Attention.inputs_q_attentionout.inputs << self.Attention.Attentionout_Error.dmu
+                self.Attention.inputs_q.j  << self.Attention.inputs_q_attentionout.outputs
+                self.Attention.inputs_q.j_td << self.Attention.input_q_ErrorCell.dtarget
+
+                self.Attention.inputs_q_attentionout.inputs << self.Attention.Attentionout_Error.dmu
+                self.Attention.inputs_q.j  << self.Attention.inputs_q_attentionout.outputs
+                self.Attention.inputs_q.j_td << self.Attention.input_v_ErrorCell.dtarget
+
+                # feedback attention out  mlp 1
+                self.MLP.Emlp1_to_attentionout.inputs << self.MLP.mlp_1_error.dmu
+                self.Attention.Attention_out.j << self.MLP.Emlp1_to_attentionout.outputs
+                self.Attention.Attention_out.j_td <<     self.Attention.Attentionout_Error.dtarget
+
+
+                # feedback between mlp1 and mlp2
+                self.MLP.Emlp2_mlp1.inputs << self.MLP.mlp_2_error.dmu
+                self.MLP.mlp_1.j << self.MLP.Emlp2_mlp1.outputs
+                self.MLP.mlp_1.j_td << self.MLP.mlp_1_error.dtarget
+
+                # feedback between mlp2 and zout 
+                self.MLP.Ezout_mlp2.inputs << self.z_out_error.dmu
+                self.MLP.mlp_2.j << self.MLP.Ezout_mlp2.outputs
+                self.MLP.mlp_2.j_td << self.MLP.mlp_2_error.dtarget
+                # feedback between target and zout
+
+                self.Etargetlogit_zout.inputs << self.target_logit_error.dmu
+                self.z_out.j << self.Etargetlogit_zout.outputs
+                self.z_out.j_td << self.z_out_error.dtarget
+
+                #TODO 2 FACtor hebbian update
+                self.Embedding.W_emb_q.pre  << self.Embedding.emb_out
+                self.Embedding.W_emb_q.post << self.Attention.input_q_ErrorCell.dmu
+
+                self.Embedding.W_emb_k.pre << self.Embedding.emb_out
+                self.Embedding.W_emb_k.post << self.Attention.input_k_ErrorCell.dmu
+
+                self.Embedding.W_emb_v.pre << self.Embedding.emb_out
+                self.Embedding.W_emb_v.post << self.Attention.input_v_ErrorCell.dmu
+
+                self.Attention.inputs_k_attentionout.pre << self.Attention.inputs_k.zF
+                self.Attention.inputs_k_attentionout.post << self.Attention.Attentionout_Error.dmu  # if needed
+
+                self.Attention.inputs_q_attentionout.pre << self.Attention.inputs_q.zF
+                self.Attention.inputs_q_attentionout.post << self.Attention.Attentionout_Error.dmu  # if needed
+
+                self.Attention.inputs_v_attentionout.pre << self.Attention.inputs_v.zF
+                self.Attention.inputs_v_attentionout.post << self.Attention.Attentionout_Error.dmu  # if needed
+
+                self.Attention.attention_to_mlp.pre << self.Attention.Attention_out.zF
+                self.Attention.attention_to_mlp.post << self.MLP.mlp_1_error.dmu     # if needed
+
+                
+                self.MLP.mlp1_mlp2.pre << self.MLP.mlp_1.zF
+                self.MLP.mlp1_mlp2.post  <<  self.MLP.mlp_2_error.dmu   
+
+                self.MLP.mlp2_zout.pre    << self.MLP.mlp_2.zF
+                self.MLP.mlp2_zout.post  << self.z_out_error.dmu
+
+                self.zout_targetlogit.pre  << self.z_out.zF
+                self.zout_targetlogit.post  << self.target_logit_error.dmu
+
+
+
+                # finished 
+
+                #TODO PROJECTION
+                self.q_embed = RateCell("q_embed", n_units=dim, tau_m=0., act_fx="identity")
+                self.q_inputk = RateCell("q_inputk", n_units=dim, tau_m=0., act_fx=act_fx)
+                self.q_inputv = RateCell("q_inputv", n_units=dim, tau_m=0., act_fx=act_fx)
+                self.q_inputq = RateCell("q_inputq", n_units=dim, tau_m=0., act_fx=act_fx)
+                self.q_Attentionscore = RateCell("q_Attentionscore", n_units=dim, tau_m=0., act_fx=act_fx)
+                self.q_mlp1 = RateCell("q_mlp1", n_units=4 *dim, tau_m=0., act_fx=act_fx)
+                self.q_mlp2 = RateCell("q_mlp2", n_units=dim, tau_m=0., act_fx=act_fx)
+                self.q_out = RateCell("q_out", n_units=dim, tau_m=0., act_fx=act_fx)
+                self.qtarget_logits = RateCell("qtarget_logits", n_units=dim, tau_m=0., act_fx="identity")
+                self.qError_target_logit=ErrorCell("qError_target_logit", n_units=dim)
+# #                 # --- ERROR CELL ---
+#                 self.e_Qtarget = ErrorCell("e_Qtarget", n_units=dim)
+
+              
+                # --- STATIC SYNAPSES ---
+                self.Qembed_inputk = StaticSynapse(
+                    "Qembed_inputk", shape=(dim, dim),
+                    bias_init=dist.constant(value=0.), key=subkeys[0]
+                )
+                self.Qembed_inputv = StaticSynapse(
+                    "Qembed_inputv", shape=(dim, dim),
+                    bias_init=dist.constant(value=0.), key=subkeys[0]
+                )
+                self.Qembed_inputq = StaticSynapse(
+                    "Qembed_inputq", shape=(dim, dim),
+                    bias_init=dist.constant(value=0.), key=subkeys[0]
+                )
+                self.Qinputk_attentionscore = StaticSynapse(
+                    "Qinputk_attentionscore", shape=(dim, dim),
+                    bias_init=dist.constant(value=0.), key=subkeys[0]
+                )
+                self.Qinputq_attentionscore = StaticSynapse(
+                    "Qinputq_attentionscore", shape=(dim, dim),
+                    bias_init=dist.constant(value=0.), key=subkeys[0]
+                )
+                self.Qinputv_attentionscore = StaticSynapse(
+                    "Qinputv_attentionscore", shape=(dim, dim),
+                    bias_init=dist.constant(value=0.), key=subkeys[0]
+                )
+
+
+                self.QAttention_mlp1 = StaticSynapse(
+                    "QAttention_mlp1", shape=(dim, dim),
+                    bias_init=dist.constant(value=0.), key=subkeys[1]
+                )
+
+                # TODO I MAKE 4* 
+                self.Qmlp1_mlp2= StaticSynapse(
+                    "Qmlp1_mlp2", shape=(4* dim, dim),
+                    bias_init=dist.constant(value=0.), key=subkeys[2]
+                )
+                self.Qmlp2_out = StaticSynapse(
+                    "Qmlp2_out", shape=(dim, dim),
+                    bias_init=dist.constant(value=0.), key=subkeys[3]
+                )
+                self.Qout_target = StaticSynapse(
+                    "Qout_target", shape=(dim, dim),
+                    bias_init=dist.constant(value=0.), key=subkeys[4]
+                )
+
+                                # Embedding to K/V/Q projections
+                self.Qembed_inputk.inputs << self.q_embed.zF
+                self.q_inputk.j << self.Qembed_inputk.outputs
+
+                self.Qembed_inputv.inputs << self.q_embed.zF
+                self.q_inputv.j << self.Qembed_inputv.outputs
+
+                self.Qembed_inputq.inputs << self.q_embed.zF
+                self.q_inputq.j << self.Qembed_inputq.outputs
+
+                # Attention score receives projections from K, Q, V
+                self.Qinputk_attentionscore.inputs << self.q_inputk.zF
+                self.q_Attentionscore.j << self.Qinputk_attentionscore.outputs
+
+                self.Qinputq_attentionscore.inputs << self.q_inputq.zF
+                self.q_Attentionscore.j << self.Qinputq_attentionscore.outputs
+
+                self.Qinputv_attentionscore.inputs << self.q_inputv.zF
+                self.q_Attentionscore.j << self.Qinputv_attentionscore.outputs
+
+                # Attention → MLP1
+                self.QAttention_mlp1.inputs << self.q_Attentionscore.zF
+                self.q_mlp1.j << self.QAttention_mlp1.outputs
+
+                # MLP1 → MLP2
+                self.Qmlp1_mlp2.inputs << self.q_mlp1.zF
+                self.q_mlp2.j << self.Qmlp1_mlp2.outputs
+
+                # MLP2 → OUT
+                self.Qmlp2_out.inputs << self.q_mlp2.zF
+                self.q_out.j << self.Qmlp2_out.outputs
+
+                # OUT → target logits
+                self.Qout_target.inputs << self.q_out.zF
+                self.qtarget_logits.j << self.Qout_target.outputs
+                #wire last error projection cell to target logit
+                self.qError_target_logit.target << self.qtarget_logits.z
+
+
+
+
+
+
+
+                                
+
+
+
+
+                                
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+
+
+
+
 
                 
 
@@ -149,7 +380,7 @@ class PCN():
 
 
 
-#                 self.z_qkv=RateCell("z_qkv",n_units=in_dim,tau_m=0,act_fx="identity")
+# #                 self.z_qkv=RateCell("z_qkv",n_units=dim,tau_m=0,act_fx="identity")
 
 #                 self.z_score=RateCell("z_score",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
 
@@ -160,13 +391,13 @@ class PCN():
 #                 self.e_fc2=ErrorCell("e_fc2",n_units=dim)
 #                 self.zout=RateCell("zout",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
 #                 self.e_zout=ErrorCell("e_zout",n_units=dim)
-#                 self.target_logits=RateCell("target_logits",n_units=out_dim,tau_m=0.,act_fx="identity")
-#                 self.e_target_logits=ErrorCell("e_target_logits",n_units=out_dim)
+#                 self.target_logits=RateCell("target_logits",n_units=dim,tau_m=0.,act_fx="identity")
+#                 self.e_target_logits=ErrorCell("e_target_logits",n_units=dim)
 
 
 #                 # connection
 #                 self.Wqkv_score = HebbianSynapse(
-#                     "Wqkv_score", shape=(in_dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+#                     "Wqkv_score", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
 #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
 #                 )
 #                 self.Wscore_fc1 = HebbianSynapse(
@@ -182,25 +413,25 @@ class PCN():
 #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
 #                 )
 #                 self.Wout_target = HebbianSynapse(
-#                     "Wout_target", shape=(dim,out_dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+#                     "Wout_target", shape=(dim,dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
 #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
 #                 )
 
 
 
                 #feedback
-                self.Efc1_score = StaticSynapse(
-                    "Efc1_score", shape=(hid2, hid1), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-                )
-                self.Efc2_fc1 = StaticSynapse(
-                    "Efc2_fc1", shape=(hid3, hid2), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-                )
-                self.Eout_fc2 = StaticSynapse(
-                    "Eout_fc2", shape=(hid4, hid3), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-                )
-                self.Etarget_out = StaticSynapse(
-                    "Etarget_out", shape=(hid4, out_dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-                )
+                # self.Efc1_score = StaticSynapse(
+                #     "Efc1_score", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                # )
+                # self.Efc2_fc1 = StaticSynapse(
+                #     "Efc2_fc1", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                # )
+                # self.Eout_fc2 = StaticSynapse(
+                #     "Eout_fc2", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                # )
+                # self.Etarget_out = StaticSynapse(
+                #     "Etarget_out", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                # )
 
 #                 # assigning class 
                 
@@ -275,58 +506,58 @@ class PCN():
 # #                 # self.Wout_target << self.zout.zF
 # #                 # self.Wout_target << self.e_target_logits.dmu
 
-                # --- RATE CELLS ---
-                self.q_qkv = RateCell("q_qkv", n_units=in_dim, tau_m=0., act_fx="identity")
-                self.q_score = RateCell("q_score", n_units=hid1, tau_m=0., act_fx=act_fx)
-                self.q_fc1 = RateCell("q_fc1", n_units=hid2, tau_m=0., act_fx=act_fx)
-                self.q_fc2 = RateCell("q_fc2", n_units=hid3, tau_m=0., act_fx=act_fx)
-                self.q_out = RateCell("q_out", n_units=hid4, tau_m=0., act_fx=act_fx)
-                self.qtarget_logits = RateCell("qtarget_logits", n_units=out_dim, tau_m=0., act_fx="identity")
+#                 # --- RATE CELLS ---
+#                 self.q_qkv = RateCell("q_qkv", n_units=dim, tau_m=0., act_fx="identity")
+#                 self.q_score = RateCell("q_score", n_units=dim, tau_m=0., act_fx=act_fx)
+#                 self.q_fc1 = RateCell("q_fc1", n_units=dim, tau_m=0., act_fx=act_fx)
+#                 self.q_fc2 = RateCell("q_fc2", n_units=dim, tau_m=0., act_fx=act_fx)
+#                 self.q_out = RateCell("q_out", n_units=dim, tau_m=0., act_fx=act_fx)
+#                 self.qtarget_logits = RateCell("qtarget_logits", n_units=dim, tau_m=0., act_fx="identity")
 
-# #                 # --- ERROR CELL ---
-# #                 self.e_Qtarget = ErrorCell("e_Qtarget", n_units=out_dim)
+# # #                 # --- ERROR CELL ---
+# # #                 self.e_Qtarget = ErrorCell("e_Qtarget", n_units=dim)
 
-                # --- STATIC SYNAPSES ---
-                self.Qqkv_score = StaticSynapse(
-                    "Qqkv_score", shape=(in_dim, hid1),
-                    bias_init=dist.constant(value=0.), key=subkeys[0]
-                )
-                self.Qscore_fc1 = StaticSynapse(
-                    "Qscore_fc1", shape=(hid1, hid2),
-                    bias_init=dist.constant(value=0.), key=subkeys[1]
-                )
-                self.Qfc1_fc2 = StaticSynapse(
-                    "Qfc1_fc2", shape=(hid2, hid3),
-                    bias_init=dist.constant(value=0.), key=subkeys[2]
-                )
-                self.Qfc2_out = StaticSynapse(
-                    "Qfc2_out", shape=(hid3, hid4),
-                    bias_init=dist.constant(value=0.), key=subkeys[3]
-                )
-                self.Qout_target = StaticSynapse(
-                    "Qout_target", shape=(hid4, out_dim),
-                    bias_init=dist.constant(value=0.), key=subkeys[4]
-                )
+#                 # --- STATIC SYNAPSES ---
+#                 self.Qqkv_score = StaticSynapse(
+#                     "Qqkv_score", shape=(dim, dim),
+#                     bias_init=dist.constant(value=0.), key=subkeys[0]
+#                 )
+#                 self.Qscore_fc1 = StaticSynapse(
+#                     "Qscore_fc1", shape=(dim, dim),
+#                     bias_init=dist.constant(value=0.), key=subkeys[1]
+#                 )
+#                 self.Qfc1_fc2 = StaticSynapse(
+#                     "Qfc1_fc2", shape=(dim, dim),
+#                     bias_init=dist.constant(value=0.), key=subkeys[2]
+#                 )
+#                 self.Qfc2_out = StaticSynapse(
+#                     "Qfc2_out", shape=(dim, dim),
+#                     bias_init=dist.constant(value=0.), key=subkeys[3]
+#                 )
+#                 self.Qout_target = StaticSynapse(
+#                     "Qout_target", shape=(dim, dim),
+#                     bias_init=dist.constant(value=0.), key=subkeys[4]
+#                 )
 
-# #                 # --- Wire the network ---
-# #                 self.Qqkv_score.inputs << self.q_qkv.zF
-# #                 self.q_score.j << self.Qqkv_score.outputs
+# # #                 # --- Wire the network ---
+# # #                 self.Qqkv_score.inputs << self.q_qkv.zF
+# # #                 self.q_score.j << self.Qqkv_score.outputs
 
-# #                 self.Qscore_fc1.inputs << self.q_score.zF
-# #                 self.q_fc1.j << self.Qscore_fc1.outputs
+# # #                 self.Qscore_fc1.inputs << self.q_score.zF
+# # #                 self.q_fc1.j << self.Qscore_fc1.outputs
 
-# #                 self.Qfc1_fc2.inputs << self.q_fc1.zF
-# #                 self.q_fc2.j << self.Qfc1_fc2.outputs
+# # #                 self.Qfc1_fc2.inputs << self.q_fc1.zF
+# # #                 self.q_fc2.j << self.Qfc1_fc2.outputs
 
-# #                 self.Qfc2_out.inputs << self.q_fc2.zF
-# #                 self.q_out.j << self.Qfc2_out.outputs
+# # #                 self.Qfc2_out.inputs << self.q_fc2.zF
+# # #                 self.q_out.j << self.Qfc2_out.outputs
 
-# #                 self.Qout_target.inputs << self.q_out.zF
-# #                 self.qtarget_logits.j << self.Qout_target.outputs
+# # #                 self.Qout_target.inputs << self.q_out.zF
+# # #                 self.qtarget_logits.j << self.Qout_target.outputs
 
 
 
-# #                 # wire self.Qout_target.outputs to 
+# # #                 # wire self.Qout_target.outputs to 
 # #                 self.e_Qtarget.target << self.qtarget_logits.z
              
 

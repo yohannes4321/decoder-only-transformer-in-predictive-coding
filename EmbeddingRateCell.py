@@ -14,10 +14,10 @@ class Embedding(JaxComponent):
 
         super().__init__(name, **kwargs)
 
-        # ✅ store name
+       
         self.name = name
 
-        # ✅ split keys inside (correct!)
+    
         dkey, *subkeys = random.split(dkey, 10)
         self.batch_size = batch_size
         self.block_size = block_size

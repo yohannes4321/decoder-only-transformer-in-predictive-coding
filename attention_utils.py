@@ -95,15 +95,49 @@ class AttentionBlock(JaxComponent):
         self.inputs_v = RateCell("inputs_v",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
         self.input_v_ErrorCell=ErrorCell("input_v_ErrorCell",n_units=dim)
         self.mask = Compartment(jnp.zeros((batch_size, seq_len, seq_len), dtype=bool))
+        self.inputs_k_attentionout = HebbianSynapse(
+                    "inputs_k_attentionout", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+                )
+        self.inputs_q_attentionout = HebbianSynapse(
+                    "inputs_q_attentionout", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+                )
+        self.inputs_v_attentionout = HebbianSynapse(
+                    "inputs_v_attentionout", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+                )
+
+        #static 
+
+        self.Eattentionout_input_k = StaticSynapse(
+                    "Eattentionout_inputk", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
+                )
+
+        self.Eattentionout_input_q = StaticSynapse(
+                    "Eattentionout_inputq", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
+                )
+        self.attentionout_input_v = StaticSynapse(
+                    "attentionout_inputv", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
+                )
+
+
+
+        
+        
         
         self.key = Compartment(random.PRNGKey(0))
         self.flat_outputs=Compartment(jnp.zeros((batch_size,self.flat_dim)))
         # Output compartment
         self.outputs = Compartment(jnp.zeros((batch_size, seq_len, dim)))
         self.Attention_out=RateCell("Attention_out",n_units=n_embed,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
+        self.Attentionout_Error = ErrorCell("Attentionout_Error",n_units=dim)
         self.attention_to_mlp = HebbianSynapse(
                     "attention_to_mlp", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+                )
+        self.Emlp1_to_attention = StaticSynapse(
+                    "mlp_to_attention", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
                 )
 
     @transition(output_compartments=["outputs"])
