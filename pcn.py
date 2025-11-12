@@ -1,4 +1,5 @@
 from Dataloader import vocab_size
+from ngcsimlib.compilers import compile_command, wrap_command
 from ngclearn.utils.io_utils import makedir
 from ngclearn.utils.io_utils import makedir
 from ngcsimlib.context import Context
@@ -19,12 +20,17 @@ from flax import nnx
 from flax import linen as nn
 from ngclearn.utils.model_utils import drop_out, softmax, gelu, layer_normalize
 from functools import partial as bind
+from ngcsimlib.context import get_current_context
+
+
+
 block_size = 128
 n_embed = 64
 drop_out=0.5
 batch_size=32
 n_heads=8
 dropout_rate=0.5
+
 class PCN():
     def __init__(self, dkey, dim,T=10,
                  dt=1., tau_m=10., act_fx="tanh", eta=0.001, exp_dir="exp",
@@ -59,7 +65,7 @@ class PCN():
 
             with Context("Circuit") as self.circuit:
                 
-
+         
 
                 self.MLP = MLP("mlp", dkey, dim, act_fx, tau_m, eta, wlb, wub, optim_type)
 
@@ -591,14 +597,18 @@ class PCN():
         def clamp_input(x):
             self.Embedding.j.set(x)
             self.q_embed.j.set(x)
+        # self.circuit.wrap_and_add_command((clamp_input), name="clamp_input")
 
         @Context.dynamicCommand
         def clamp_target(y):
             self.target_logit.j.set(y)
-
+        # self.circuit.wrap_and_add_command((clamp_target), name="clamp_target")
         @Context.dynamicCommand
         def clamp_infer_target(y):
             self.qError_target_logit.target.set(y)
+        # self.circuit.wrap_and_add_command((clamp_infer_target), name="clamp_infer_target")
+        
+
     def save_to_disk(self, params_only=False):
         """
         Saves current model parameter values to disk
@@ -643,11 +653,15 @@ class PCN():
             self._dynamic(processes)
 
     def process(self, obs, lab, adapt_synapses=True):
+        
+
         ## can think of the PCN as doing "PEM" -- projection, expectation, then maximization
         eps = 0.001
         _lab = jnp.clip(lab, eps, 1. - eps)
         #self.circuit.reset(do_reset=True)
         self.circuit.reset()
+        
+            
 
         ## pin/tie inference synapses to be exactly equal to the forward ones
         self.Qembed_inputq.weights.set(self.W_emb_q.weights.value)
