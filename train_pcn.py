@@ -21,6 +21,11 @@ VERBOSITY = 1
 LEARNING_RATE = 1e-3
 SEED = 1234
 MAX_NEW_TOKENS = 50
+n_embed=32
+
+
+n_heads=8
+dropout_rate=0.5
 
 # -----------------------------
 # Tokenizer and Data
@@ -44,7 +49,7 @@ val_loader   = create_dataloader(val_dataset, BATCH_SIZE, shuffle=False, pad_tok
 dkey = random.PRNGKey(SEED)
 dim = 512   # model embedding dim (match your PCN instantiation)
 model = PCN(dkey=dkey, dim=dim, T=10, dt=1., tau_m=10., act_fx="tanh",
-            eta=0.001, exp_dir="exp", model_name="pcn_lm", batch_size=BATCH_SIZE, loadDir=None)
+            eta=0.001, exp_dir="exp", model_name="pcn_lm", block_size=BLOCK_SIZE,n_embed=n_embed,batch_size=BATCH_SIZE,n_heads=n_heads,dropout_rate=dropout_rate, loadDir=None)
 print("Model built")
 
 # -----------------------------
@@ -164,22 +169,22 @@ def generate(model, seed_ids, max_new_tokens=50, temperature=1.0, eos_token_id=N
 
     return jnp.array(seq, dtype=jnp.int32)
 
-# -----------------------------
-# Example generate after training
-# -----------------------------
-# pick first example from validation data as seed
-for batch in val_loader:
-    seed = batch["input_ids"][0]  # jnp 1D/possibly padded
-    # trim zeros/pads to get a shorter seed if needed (optional)
-    seed_trimmed = seed[:64]      # use first 64 tokens of validation sample as seed
-    generated = generate(model, seed_trimmed, max_new_tokens=50, temperature=1.0, eos_token_id=eos_token_id)
-    print("Seed tokens:", seed_trimmed)
-    print("Generated token ids:", generated)
-    break
+# # -----------------------------
+# # Example generate after training
+# # -----------------------------
+# # pick first example from validation data as seed
+# for batch in val_loader:
+#     seed = batch["input_ids"][0]  # jnp 1D/possibly padded
+#     # trim zeros/pads to get a shorter seed if needed (optional)
+#     seed_trimmed = seed[:64]      # use first 64 tokens of validation sample as seed
+#     generated = generate(model, seed_trimmed, max_new_tokens=50, temperature=1.0, eos_token_id=eos_token_id)
+#     print("Seed tokens:", seed_trimmed)
+#     print("Generated token ids:", generated)
+#     break
 
-# optionally convert token ids back to text using your BPE tokenizer
-try:
-    decoded = bpe.tokenizer.decode(list(map(int, generated.tolist())))
-    print("Generated text:", decoded)
-except Exception:
-    print("Could not decode generated IDs to text with current tokenizer.")
+# # optionally convert token ids back to text using your BPE tokenizer
+# try:
+#     decoded = bpe.tokenizer.decode(list(map(int, generated.tolist())))
+#     print("Generated text:", decoded)
+# except Exception:
+#     print("Could not decode generated IDs to text with current tokenizer.")
