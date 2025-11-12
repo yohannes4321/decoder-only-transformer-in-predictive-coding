@@ -32,6 +32,7 @@ class Embedding(JaxComponent):
         
         self.emb_out = Compartment(jnp.zeros((self.flat_dim, self.n_embed)))
         self.j = Compartment(jnp.zeros((batch_size, block_size)))
+        
         self.W_emb_q=HebbianSynapse(
          "W_emb_q", shape=(self.n_embed,self.n_embed), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]

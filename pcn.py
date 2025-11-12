@@ -9,6 +9,7 @@ from EmbeddingRateCell import Embedding
 from ngclearn.utils.optim import adam
 from jax import jit,random,numpy as jnp 
 import jax
+from ngcsimlib.utils import get_current_context
 from MLP import MLP
 from attention_utils import AttentionBlock
 from ngclearn.components import GaussianErrorCell as ErrorCell, RateCell, HebbianSynapse, StaticSynapse
@@ -59,24 +60,32 @@ class PCN():
             with Context("Circuit") as self.circuit:
                 
 
+
                 self.MLP = MLP("mlp", dkey, dim, act_fx, tau_m, eta, wlb, wub, optim_type)
 
                 self.Attention=AttentionBlock("Attention",dkey,n_heads=n_heads,n_embed=n_embed,seq_len=14,dropout_rate=dropout_rate,batch_size=batch_size,tau_m=tau_m,dim=dim,eta=0.001,wlb=wlb,wub=wub,optim_type=optim_type,act_fx='tanh')
-                self.Embedding = Embedding(
-    "Embedding",
-    dkey,               # master random key
-    n_embed,
-    vocab_size,
-    block_size,
-    drop_out,
-    batch_size,
-    eta,                
-    wlb,
-    wub,
-    optim_type
-)
+                self.Embedding = Embedding("Embedding", dkey, n_embed,vocab_size,block_size,drop_out,batch_size,eta,wlb,wub,optim_type)
+                
 
-               
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                 self.z_out_error=ErrorCell("z_out_error", n_units=dim)
                 self.z_out=RateCell("z_out",n_units=dim,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type='euler')
                 self.zout_targetlogit=HebbianSynapse(
@@ -88,9 +97,9 @@ class PCN():
                 )
                 self.target_logit_error=ErrorCell("target_logit_error", n_units=dim)
                 self.target_logit =RateCell("target_logit",n_units=dim,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type='euler')
-               
 
 
+                
 
                 # forward connection
                 self.Embedding.W_emb_q.inputs << self.Embedding.emb_out
@@ -140,6 +149,10 @@ class PCN():
                 self.target_logit_error.mu << self.zout_targetlogit.outputs
                 self.target_logit_error.target << self.target_logit.z
 
+
+
+
+
                 #TODO feedback start here 
                 #feedback input_k,q,v and attention out
                 self.Attention.Eattentionout_input_k.inputs << self.Attention.Attentionout_Error.dmu
@@ -147,12 +160,12 @@ class PCN():
                 self.Attention.inputs_k.j_td << self.Attention.input_k_ErrorCell.dtarget
 
 
-                self.Attention.inputs_q_attentionout.inputs << self.Attention.Attentionout_Error.dmu
-                self.Attention.inputs_q.j  << self.Attention.inputs_q_attentionout.outputs
+                self.Attention.Eattentionout_input_q.inputs << self.Attention.Attentionout_Error.dmu
+                self.Attention.inputs_q.j  << self.Attention.Eattentionout_input_q.outputs
                 self.Attention.inputs_q.j_td << self.Attention.input_q_ErrorCell.dtarget
 
-                self.Attention.inputs_q_attentionout.inputs << self.Attention.Attentionout_Error.dmu
-                self.Attention.inputs_q.j  << self.Attention.inputs_q_attentionout.outputs
+                self.Attention.Eattentionout_input_v.inputs << self.Attention.Attentionout_Error.dmu
+                self.Attention.inputs_q.j  << self.Attention.Eattentionout_input_v.outputs
                 self.Attention.inputs_q.j_td << self.Attention.input_v_ErrorCell.dtarget
 
                 # feedback attention out  mlp 1
@@ -311,6 +324,46 @@ class PCN():
                 #wire last error projection cell to target logit
                 self.qError_target_logit.target << self.qtarget_logits.z
 
+                advance_process = (JaxProcess(name="advance_process")
+                        >> self.Attention.Eattentionout_input_k.advance_state
+                        >> self.Attention.Eattentionout_input_q.advance_state
+                        >> self.Attention.Eattentionout_input_v.advance_state
+                        >> self.MLP.Emlp1_to_attentionout.advance_state
+                        >> self.MLP.Emlp2_mlp1.advance_state
+                        >> self.MLP.Ezout_mlp2.advance_state
+                        >> self.Etargetlogit_zout.advance_state
+                        >> self.Embedding.W_emb_q.advance_state 
+                        >> self.Embedding.W_emb_k.advance_state 
+                        >> self.Embedding.W_emb_v.advance_state
+                        >> self.Embedding.advance_state
+                        >> self.Attention.inputs_q.advance_state
+                        >> self.Attention.input_q_ErrorCell.advance_state
+                        >> self.Attention.inputs_k.advance_state
+                        >> self.Attention.input_k_ErrorCell.advance_state
+                        >> self.Attention.inputs_v.advance_state
+                        >> self.Attention.input_v_ErrorCell.advance_state
+                        >> self.Attention.inputs_k_attentionout.advance_state
+                        >> self.Attention.inputs_q_attentionout.advance_state
+                        >> self.Attention.inputs_v_attentionout.advance_state
+                        >> self.Attention.Attentionout_Error.advance_state
+                        >> self.Attention.attention_to_mlp.advance_state
+                        >> self.MLP.mlp_1_error.advance_state
+                        >> self.MLP.mlp_1.advance_state
+                        >> self.MLP.mlp1_mlp2.advance_state
+                        >> self.MLP.mlp_2_error.advance_state
+                        >> self.MLP.mlp_2.advance_state
+                        >> self.MLP.mlp2_zout.advance_state
+                        >> self.z_out_error.advance_state
+                        >> self.z_out.advance_state
+                        >> self.zout_targetlogit.advance_state
+                        >> self.target_logit_error.advance_state
+                        >> self.target_logit.advance_state
+                )
+
+
+
+
+
                 reset_process = (JaxProcess(name="reset_process")
 
                             >> self.q_embed.reset
@@ -339,6 +392,7 @@ class PCN():
                             >> self.z_out_error.reset
                             >> self.z_out.reset
                             >> self.target_logit_error.reset
+                            >> self.target_logit.reset
 
                         )
 
@@ -407,6 +461,174 @@ class PCN():
                     # final error cell
                     >> self.qError_target_logit.advance_state
                 )
+            process = (reset_process, advance_process, evolve_process, project_process)
+
+            self._dynamic(process)
+    def _dynamic(self,process):
+        vars = self.circuit.get_components( 
+        "Eattentionout_input_k",
+        "Eattentionout_input_q",
+        "Eattentionout_input_v",
+        "Emlp1_to_attentionout",
+        "Emlp2_mlp1",
+        "Ezout_mlp2",
+        "Etargetlogit_zout",
+        "W_emb_q",
+        "W_emb_k",
+        "W_emb_v",
+        "inputs_q",
+        "input_q_ErrorCell",
+        "inputs_k",
+        "input_k_ErrorCell",
+        "inputs_v",
+        "input_v_ErrorCell",
+        "inputs_k_attentionout",
+        "inputs_q_attentionout",
+        "inputs_v_attentionout",
+        "Attentionout_Error",
+        "attention_to_mlp",
+        "mlp_1_error",
+        "mlp_1",
+        "mlp1_mlp2",
+        "mlp_2_error",
+        "mlp_2",
+        "mlp2_zout",
+        "z_out_error",
+        "z_out",
+        "zout_targetlogit",
+        "target_logit_error",
+        "target_logit",
+        "q_embed",
+        "q_inputk",
+        "q_inputv",
+        "q_inputq",
+        "q_Attentionscore",
+        "q_mlp1",
+        "q_mlp2",
+        "q_out",
+        "qtarget_logits",
+        "qError_target_logit",
+        "Qembed_inputk",
+        "Qembed_inputv",
+        "Qembed_inputq",
+        "Qinputk_attentionscore",
+        "Qinputq_attentionscore",
+        "Qinputv_attentionscore",
+        "QAttention_mlp1",
+        "Qmlp1_mlp2",
+        "Qmlp2_out",
+        "Qout_target"
+        )
+
+    # # Get components
+    #     *component_names)
+
+    # Unpack into attributes
+        (
+            self.Eattentionout_input_k,
+            self.Eattentionout_input_q,
+            self.Eattentionout_input_v,
+            self.Emlp1_to_attentionout,
+            self.Emlp2_mlp1,
+            self.Ezout_mlp2,
+            self.Etargetlogit_zout,
+            self.W_emb_q,
+            self.W_emb_k,
+            self.W_emb_v,
+            self.inputs_q,
+            self.input_q_ErrorCell,
+            self.inputs_k,
+            self.input_k_ErrorCell,
+            self.inputs_v,
+            self.input_v_ErrorCell,
+            self.inputs_k_attentionout,
+            self.inputs_q_attentionout,
+            self.inputs_v_attentionout,
+            self.Attentionout_Error,
+            self.attention_to_mlp,
+            self.mlp_1_error,
+            self.mlp_1,
+            self.mlp1_mlp2,
+            self.mlp_2_error,
+            self.mlp_2,
+            self.mlp2_zout,
+            self.z_out_error,
+            self.z_out,
+            self.zout_targetlogit,
+            self.target_logit_error,
+            self.target_logit,
+            self.q_embed,
+            self.q_inputk,
+            self.q_inputv,
+            self.q_inputq,
+            self.q_Attentionscore,
+            self.q_mlp1,
+            self.q_mlp2,
+            self.q_out,
+            self.qtarget_logits,
+            self.qError_target_logit,
+            self.Qembed_inputk,
+            self.Qembed_inputv,
+            self.Qembed_inputq,
+            self.Qinputk_attentionscore,
+            self.Qinputq_attentionscore,
+            self.Qinputv_attentionscore,
+            self.QAttention_mlp1,
+            self.Qmlp1_mlp2,
+            self.Qmlp2_out,
+            self.Qout_target
+        ) = vars
+
+                # print(len(D))
+
+        reset_proc, advance_proc, evolve_proc, project_proc = process
+
+        self.circuit.wrap_and_add_command(jit(reset_proc.pure), name="reset")
+        self.circuit.wrap_and_add_command(jit(advance_proc.pure), name="advance")
+        self.circuit.wrap_and_add_command(jit(project_proc.pure), name="project")
+        self.circuit.wrap_and_add_command(jit(evolve_proc.pure), name="evolve")
+        @Context.dynamicCommand
+        def clamp_input(x):
+            self.Embedding.j.set(x)
+            self.q_embed.j.set(x)
+
+        @Context.dynamicCommand
+        def clamp_target(y):
+            self.target_logit.j.set(y)
+
+        @Context.dynamicCommand
+        def clamp_infer_target(y):
+            self.qError_target_logit.target.set(y)
+
+
+
+
+
+
+
+                                                
+
+
+
+
+                                                
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -421,6 +643,14 @@ class PCN():
 
 
 
+
+                                
+
+
+                                
+
+
+
                                 
 
 
@@ -433,125 +663,85 @@ class PCN():
 
 
 
+                    
+
+                    
 
 
 
+    # #                 self.z_qkv=RateCell("z_qkv",n_units=dim,tau_m=0,act_fx="identity")
+
+    #                 self.z_score=RateCell("z_score",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
+
+    #                 self.e_score=ErrorCell("e_score",n_units=dim)
+    #                 self.z_fc1=RateCell("z_fc1",n_units=dim *4,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type="euler")
+    #                 self.e_fc1=ErrorCell("e_fc1",n_units=dim)
+    #                 self.z_fc2=RateCell("z_fc2",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
+    #                 self.e_fc2=ErrorCell("e_fc2",n_units=dim)
+    #                 self.zout=RateCell("zout",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
+    #                 self.e_zout=ErrorCell("e_zout",n_units=dim)
+    #                 self.target_logits=RateCell("target_logits",n_units=dim,tau_m=0.,act_fx="identity")
+    #                 self.e_target_logits=ErrorCell("e_target_logits",n_units=dim)
+
+
+    #                 # connection
+    #                 self.Wqkv_score = HebbianSynapse(
+    #                     "Wqkv_score", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+    #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+    #                 )
+    #                 self.Wscore_fc1 = HebbianSynapse(
+    #                     "Wscore_fc1", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+    #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+    #                 )
+    #                 self.Wfc1_fc2 = HebbianSynapse(
+    #                     "Wfc1_fc2", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+    #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+    #                 )
+    #                 self.Wfc2_zout = HebbianSynapse(
+    #                     "Wfc2_zout", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+    #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+    #                 )
+    #                 self.Wout_target = HebbianSynapse(
+    #                     "Wout_target", shape=(dim,dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+    #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+    #                 )
 
 
 
+                    #feedback
+                    # self.Efc1_score = StaticSynapse(
+                    #     "Efc1_score", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                    # )
+                    # self.Efc2_fc1 = StaticSynapse(
+                    #     "Efc2_fc1", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                    # )
+                    # self.Eout_fc2 = StaticSynapse(
+                    #     "Eout_fc2", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                    # )
+                    # self.Etarget_out = StaticSynapse(
+                    #     "Etarget_out", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                    # )
+
+    #                 # assigning class 
+                    
 
 
 
+                    
+    #                 self.Wqkv_score.inputs << self.z_qkv.zF
+    #                 self.e_score.mu <<self.Wqkv_score.outputs
+    #                 self.e_score.target << self.z_score.z
+                    
+    #                 self.Wqkv_score.inputs << self.z_qkv.zF
+    #                 self.e_score.mu <<self.Wqkv_score.outputs
+    #                 self.e_score.target << self.z_score.z
+
+    #                 self.Wqkv_score.inputs << self.z_qkv.zF
+    #                 self.e_score.mu <<self.Wqkv_score.outputs
+    #                 self.e_score.target << self.z_score.z
 
 
-
-
-
-
-                
-
-
-
-
-
-                
-
-
-                
-
-
-
-                
-
-
-
-
-
-
-
-
-
-
-
-                
-
-                
-
-
-
-# #                 self.z_qkv=RateCell("z_qkv",n_units=dim,tau_m=0,act_fx="identity")
-
-#                 self.z_score=RateCell("z_score",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
-
-#                 self.e_score=ErrorCell("e_score",n_units=dim)
-#                 self.z_fc1=RateCell("z_fc1",n_units=dim *4,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type="euler")
-#                 self.e_fc1=ErrorCell("e_fc1",n_units=dim)
-#                 self.z_fc2=RateCell("z_fc2",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
-#                 self.e_fc2=ErrorCell("e_fc2",n_units=dim)
-#                 self.zout=RateCell("zout",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
-#                 self.e_zout=ErrorCell("e_zout",n_units=dim)
-#                 self.target_logits=RateCell("target_logits",n_units=dim,tau_m=0.,act_fx="identity")
-#                 self.e_target_logits=ErrorCell("e_target_logits",n_units=dim)
-
-
-#                 # connection
-#                 self.Wqkv_score = HebbianSynapse(
-#                     "Wqkv_score", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-#                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-#                 )
-#                 self.Wscore_fc1 = HebbianSynapse(
-#                     "Wscore_fc1", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-#                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-#                 )
-#                 self.Wfc1_fc2 = HebbianSynapse(
-#                     "Wfc1_fc2", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-#                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-#                 )
-#                 self.Wfc2_zout = HebbianSynapse(
-#                     "Wfc2_zout", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-#                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-#                 )
-#                 self.Wout_target = HebbianSynapse(
-#                     "Wout_target", shape=(dim,dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-#                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-#                 )
-
-
-
-                #feedback
-                # self.Efc1_score = StaticSynapse(
-                #     "Efc1_score", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-                # )
-                # self.Efc2_fc1 = StaticSynapse(
-                #     "Efc2_fc1", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-                # )
-                # self.Eout_fc2 = StaticSynapse(
-                #     "Eout_fc2", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-                # )
-                # self.Etarget_out = StaticSynapse(
-                #     "Etarget_out", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-                # )
-
-#                 # assigning class 
-                
-
-
-
-                
-#                 self.Wqkv_score.inputs << self.z_qkv.zF
-#                 self.e_score.mu <<self.Wqkv_score.outputs
-#                 self.e_score.target << self.z_score.z
-                
-#                 self.Wqkv_score.inputs << self.z_qkv.zF
-#                 self.e_score.mu <<self.Wqkv_score.outputs
-#                 self.e_score.target << self.z_score.z
-
-#                 self.Wqkv_score.inputs << self.z_qkv.zF
-#                 self.e_score.mu <<self.Wqkv_score.outputs
-#                 self.e_score.target << self.z_score.z
-
-
-#                 self.Wscore_fc1.inputs << self.z_score.zF
+    #                 self.Wscore_fc1.inputs << self.z_score.zF
 #                 self.e_fc1.mu << self.Wscore_fc1.outputs
 #                 self.e_fc1.target << self.z_fc1.z
 
