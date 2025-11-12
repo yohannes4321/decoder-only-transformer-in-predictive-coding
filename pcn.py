@@ -599,28 +599,217 @@ class PCN():
         @Context.dynamicCommand
         def clamp_infer_target(y):
             self.qError_target_logit.target.set(y)
+    def save_to_disk(self, params_only=False):
+        """
+        Saves current model parameter values to disk
+
+        Args:
+            params_only: if True, save only param arrays to disk (and not JSON sim/model structure)
+        """
+        if params_only:
+            model_dir = "{}/{}/custom".format(self.exp_dir, self.model_name)
+            # Assuming all these are attributes in your class
+            self.W_emb_q.save(model_dir)
+            self.W_emb_k.save(model_dir)
+            self.W_emb_v.save(model_dir)
+
+            self.inputs_k_attentionout.save(model_dir)
+            self.inputs_q_attentionout.save(model_dir)
+            self.inputs_v_attentionout.save(model_dir)
+
+            self.attention_to_mlp.save(model_dir)
+
+            self.mlp1_mlp2.save(model_dir)
+            self.mlp2_zout.save(model_dir)
+
+            self.zout_targetlogit.save(model_dir)
+
+        else:
+            self.circuit.save_to_json(self.exp_dir, model_name=self.model_name, overwrite=True)
+    def load_from_disk(self, model_directory):
+        """
+        Loads parameter/config values from disk to this model
+
+        Args:
+            model_directory: directory/path to saved model parameter/config values
+        """
+        print(" > Loading model from ",model_directory)
+        with Context("Circuit") as self.circuit:
+            self.circuit.load_from_dir(model_directory)
+            processes = (
+                self.circuit.reset_process, self.circuit.advance_process,
+                self.circuit.evolve_process, self.circuit.project_process
+            )
+            self._dynamic(processes)
+
+    def process(self, obs, lab, adapt_synapses=True):
+        ## can think of the PCN as doing "PEM" -- projection, expectation, then maximization
+        eps = 0.001
+        _lab = jnp.clip(lab, eps, 1. - eps)
+        #self.circuit.reset(do_reset=True)
+        self.circuit.reset()
+
+        ## pin/tie inference synapses to be exactly equal to the forward ones
+        self.Qembed_inputq.weights.set(self.W_emb_q.weights.value)
+        self.Qembed_inputq.biases.set(self.W_emb_q.biases.value)
+
+        self.Qembed_inputk.weights.set(self.W_emb_k.weights.value)
+        self.Qembed_inputk.biases.set(self.W_emb_k.biases.value)
+
+        self.Qembed_inputv.weights.set(self.W_emb_v.weights.value)
+        self.Qembed_inputv.biases.set(self.W_emb_v.biases.value)
+
+        self.Qinputk_attentionscore.weights.set(self.inputs_k_attentionout.weights.value)
+        self.Qinputk_attentionscore.biases.set(self.inputs_k_attentionout.biases.value)
+
+        self.Qinputq_attentionscore.weights.set(self.inputs_q_attentionout.weights.value)
+        self.Qinputq_attentionscore.biases.set(self.inputs_q_attentionout.biases.value)
+
+        self.Qinputv_attentionscore.weights.set(self.inputs_v_attentionout.weights.value)
+        self.Qinputv_attentionscore.biases.set(self.inputs_v_attentionout.biases.value)
+
+        self.QAttention_mlp1.weights.set(self.attention_to_mlp.weights.value)
+        self.QAttention_mlp1.biases.set(self.attention_to_mlp.biases.value)
+
+        self.Qmlp1_mlp2.weights.set(self.mlp1_mlp2.weights.value)
+        self.Qmlp1_mlp2.biases.set(self.mlp1_mlp2.biases.value)
+
+        self.Qmlp2_out.weights.set(self.mlp2_zout.weights.value)
+        self.Qmlp2_out.biases.set(self.mlp2_zout.biases.value)
+
+        self.Qout_target.weights.set(self.zout_targetlogit.weights.value)
+        self.Qout_target.biases.set(self.zout_targetlogit.biases.value)
+
+        ## pin/tie feedback synapses to transpose of forward ones
+        self.Eattentionout_input_k.weights.set(jnp.transpose(self.inputs_k_attentionout.weights.value))
+        self.Eattentionout_input_q.weights.set(jnp.transpose(self.inputs_q_attentionout.weights.value))
+        self.Eattentionout_input_v.weights.set(jnp.transpose(self.inputs_v_attentionout.weights.value))
+
+        self.Emlp1_to_attentionout.weights.set(jnp.transpose(self.attention_to_mlp.weights.value))
+        self.Emlp2_mlp1.weights.set(jnp.transpose(self.mlp1_mlp2.weights.value))
+        self.Ezout_mlp2.weights.set(jnp.transpose(self.mlp2_zout.weights.value))
+
+        self.Etargetlogit_zout.weights.set(jnp.transpose(self.zout_targetlogit.weights.value))
+
+
+        ## Perform P-step (projection step)
+        self.circuit.clamp_input(obs)
+        self.circuit.clamp_infer_target(_lab)
+        self.circuit.project(t=0., dt=1.) ## do projection/inference
+
+        ## initialize dynamics of generative model latents to projected states
+        self.inputs_k.z.set(self.q_inputk.z.value)
+        self.inputs_v.z.set(self.q_inputv.z.value)
+        self.inputs_q.z.set(self.q_inputq.z.value)
+        self.Attention_out.z.set(self.q_Attentionscore.z.value)
+        self.mlp_1.z.set(self.q_mlp1.z.value)
+        self.mlp_2.z.set(self.q_mlp2.z.value)
+        self.z_out.z.set(self.q_out.z.value)
+
+        ## self.z3.z.set(self.q3.z.value)
+        # ### Note: e1 = 0, e2 = 0 at initial conditions
+        self.target_logit_error.dmu.set(self.qError_target_logit.dmu.value)
+        self.target_logit_error.dtarget.set(self.qError_target_logit.dtarget.value)
+        ## get projected prediction (from the P-step)
+        y_mu_inf = self.qtarget_logits.z.value
+
+        EFE = 0. ## expected free energy
+        y_mu = 0.
+        if adapt_synapses:
+            ## Perform several E-steps
+            for ts in range(0, self.T):
+                self.circuit.clamp_input(obs) ## clamp data to z0 & q0 input compartments
+                self.circuit.clamp_target(_lab) ## clamp data to e3.target
+                self.circuit.advance(t=ts, dt=1.)
 
+            y_mu = self.target_logit_error.mu.value ## get settled prediction
+            ## calculate approximate EFE
+            L1 = self.input_q_ErrorCell.L.value
+            L2 = self.input_k_ErrorCell.L.value
+            L3 = self.input_v_ErrorCell.L.value
+            L4 = self.Attentionout_Error.L.value
+            L5 = self.mlp_1_error.L.value
+            L6 = self.mlp_2_error.L.value
+            L7 = self.z_out_error.L.value
+            L8 = self.target_logit_error.L.value
 
+            EFE = L1 + L2 + L3 + L4 + L5 + L6 + L7 + L8
 
 
+            ## Perform (optional) M-step (scheduled synaptic updates)
+            if adapt_synapses == True:
+                #self.circuit.evolve(t=self.T, dt=self.dt)
+                self.circuit.evolve(t=self.T, dt=1.)
+        ## skip E/M steps if just doing test-time inference
+        return y_mu_inf, y_mu, EFE
 
+    # def get_latents(self):
+    #     return self.q2.z.value
 
+    def _get_norm_string(self):  ## debugging routine
+    # weights
+        W_emb_q = self.W_emb_q.weights.value
+        W_emb_k = self.W_emb_k.weights.value
+        W_emb_v = self.W_emb_v.weights.value
+        inputs_k_attentionout = self.inputs_k_attentionout.weights.value
+        inputs_q_attentionout = self.inputs_q_attentionout.weights.value
+        inputs_v_attentionout = self.inputs_v_attentionout.weights.value
+        attention_to_mlp = self.attention_to_mlp.weights.value
+        mlp1_mlp2 = self.mlp1_mlp2.weights.value
+        mlp2_zout = self.mlp2_zout.weights.value
+        zout_targetlogit = self.zout_targetlogit.weights.value
 
-                                                
+        # biases (if they exist)
+        b_emb_q = self.W_emb_q.biases.value
+        b_emb_k = self.W_emb_k.biases.value
+        b_emb_v = self.W_emb_v.biases.value
+        b_inputs_k_attentionout = self.inputs_k_attentionout.biases.value
+        b_inputs_q_attentionout = self.inputs_q_attentionout.biases.value
+        b_inputs_v_attentionout = self.inputs_v_attentionout.biases.value
+        b_attention_to_mlp = self.attention_to_mlp.biases.value
+        b_mlp1_mlp2 = self.mlp1_mlp2.biases.value
+        b_mlp2_zout = self.mlp2_zout.biases.value
+        b_zout_targetlogit = self.zout_targetlogit.biases.value
 
+        _norms = (
+            f"W_emb_q: {jnp.linalg.norm(W_emb_q)} "
+            f"W_emb_k: {jnp.linalg.norm(W_emb_k)} "
+            f"W_emb_v: {jnp.linalg.norm(W_emb_v)} "
+            f"inputs_k_attentionout: {jnp.linalg.norm(inputs_k_attentionout)} "
+            f"inputs_q_attentionout: {jnp.linalg.norm(inputs_q_attentionout)} "
+            f"inputs_v_attentionout: {jnp.linalg.norm(inputs_v_attentionout)} "
+            f"attention_to_mlp: {jnp.linalg.norm(attention_to_mlp)} "
+            f"mlp1_mlp2: {jnp.linalg.norm(mlp1_mlp2)} "
+            f"mlp2_zout: {jnp.linalg.norm(mlp2_zout)} "
+            f"zout_targetlogit: {jnp.linalg.norm(zout_targetlogit)}\n"
+            f"b_emb_q: {jnp.linalg.norm(b_emb_q)} "
+            f"b_emb_k: {jnp.linalg.norm(b_emb_k)} "
+            f"b_emb_v: {jnp.linalg.norm(b_emb_v)} "
+            f"b_inputs_k_attentionout: {jnp.linalg.norm(b_inputs_k_attentionout)} "
+            f"b_inputs_q_attentionout: {jnp.linalg.norm(b_inputs_q_attentionout)} "
+            f"b_inputs_v_attentionout: {jnp.linalg.norm(b_inputs_v_attentionout)} "
+            f"b_attention_to_mlp: {jnp.linalg.norm(b_attention_to_mlp)} "
+            f"b_mlp1_mlp2: {jnp.linalg.norm(b_mlp1_mlp2)} "
+            f"b_mlp2_zout: {jnp.linalg.norm(b_mlp2_zout)} "
+            f"b_zout_targetlogit: {jnp.linalg.norm(b_zout_targetlogit)}"
+        )
+        
+        return _norms
 
+        
 
 
-                                                
 
 
 
 
 
+                                                    
 
 
 
 
+                                                    
 
 
 
@@ -638,86 +827,95 @@ class PCN():
 
 
 
-                                
 
 
 
 
 
-                                
 
 
-                                
 
 
+                                    
 
-                                
 
 
 
 
+                                    
 
 
+                                    
 
 
 
+                                    
 
 
-                    
 
-                    
 
 
 
-    # #                 self.z_qkv=RateCell("z_qkv",n_units=dim,tau_m=0,act_fx="identity")
 
-    #                 self.z_score=RateCell("z_score",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
 
-    #                 self.e_score=ErrorCell("e_score",n_units=dim)
-    #                 self.z_fc1=RateCell("z_fc1",n_units=dim *4,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type="euler")
-    #                 self.e_fc1=ErrorCell("e_fc1",n_units=dim)
-    #                 self.z_fc2=RateCell("z_fc2",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
-    #                 self.e_fc2=ErrorCell("e_fc2",n_units=dim)
-    #                 self.zout=RateCell("zout",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
-    #                 self.e_zout=ErrorCell("e_zout",n_units=dim)
-    #                 self.target_logits=RateCell("target_logits",n_units=dim,tau_m=0.,act_fx="identity")
-    #                 self.e_target_logits=ErrorCell("e_target_logits",n_units=dim)
 
 
-    #                 # connection
-    #                 self.Wqkv_score = HebbianSynapse(
-    #                     "Wqkv_score", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-    #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-    #                 )
-    #                 self.Wscore_fc1 = HebbianSynapse(
-    #                     "Wscore_fc1", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-    #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-    #                 )
-    #                 self.Wfc1_fc2 = HebbianSynapse(
-    #                     "Wfc1_fc2", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-    #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-    #                 )
-    #                 self.Wfc2_zout = HebbianSynapse(
-    #                     "Wfc2_zout", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-    #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-    #                 )
-    #                 self.Wout_target = HebbianSynapse(
-    #                     "Wout_target", shape=(dim,dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-    #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-    #                 )
-
-
-
-                    #feedback
-                    # self.Efc1_score = StaticSynapse(
-                    #     "Efc1_score", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-                    # )
-                    # self.Efc2_fc1 = StaticSynapse(
-                    #     "Efc2_fc1", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-                    # )
-                    # self.Eout_fc2 = StaticSynapse(
-                    #     "Eout_fc2", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
-                    # )
+
+                        
+
+                        
+
+
+
+        # #                 self.z_qkv=RateCell("z_qkv",n_units=dim,tau_m=0,act_fx="identity")
+
+        #                 self.z_score=RateCell("z_score",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
+
+        #                 self.e_score=ErrorCell("e_score",n_units=dim)
+        #                 self.z_fc1=RateCell("z_fc1",n_units=dim *4,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type="euler")
+        #                 self.e_fc1=ErrorCell("e_fc1",n_units=dim)
+        #                 self.z_fc2=RateCell("z_fc2",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
+        #                 self.e_fc2=ErrorCell("e_fc2",n_units=dim)
+        #                 self.zout=RateCell("zout",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
+        #                 self.e_zout=ErrorCell("e_zout",n_units=dim)
+        #                 self.target_logits=RateCell("target_logits",n_units=dim,tau_m=0.,act_fx="identity")
+        #                 self.e_target_logits=ErrorCell("e_target_logits",n_units=dim)
+
+
+        #                 # connection
+        #                 self.Wqkv_score = HebbianSynapse(
+        #                     "Wqkv_score", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+        #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+        #                 )
+        #                 self.Wscore_fc1 = HebbianSynapse(
+        #                     "Wscore_fc1", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+        #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+        #                 )
+        #                 self.Wfc1_fc2 = HebbianSynapse(
+        #                     "Wfc1_fc2", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+        #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+        #                 )
+        #                 self.Wfc2_zout = HebbianSynapse(
+        #                     "Wfc2_zout", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+        #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+        #                 )
+        #                 self.Wout_target = HebbianSynapse(
+        #                     "Wout_target", shape=(dim,dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+        #                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+        #                 )
+
+
+
+                        #feedback
+                        # self.Efc1_score = StaticSynapse(
+                        #     "Efc1_score", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                        # )
+                        # self.Efc2_fc1 = StaticSynapse(
+                        #     "Efc2_fc1", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                        # )
+                        # self.Eout_fc2 = StaticSynapse(
+                        #     "Eout_fc2", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
+                        # )
                     # self.Etarget_out = StaticSynapse(
                     #     "Etarget_out", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[4]
                     # )
