@@ -12,7 +12,13 @@ import ngclearn.utils.weight_distribution as dist
 def _compute_attention(Q, K, V, mask, n_heads, d_head, dropout_rate, key):
     """
     Compute multi-head attention
+
     """
+    print("inside attention function start qkv  *************************************")
+    print(Q.shape)
+    print(K.shape)
+    print(V.shape)
+    print("inside attention function finised qkv*************************************")
     if Q.ndim == 2:
         # 2D input: (batch_size * seq_len, n_embed) -> reshape to 3D
         M, D = Q.shape
@@ -48,7 +54,8 @@ def _compute_attention(Q, K, V, mask, n_heads, d_head, dropout_rate, key):
         
     attention = jnp.einsum("BHTS,BHSE->BHTE", score, v)
     attention = attention.transpose([0, 2, 1, 3]).reshape((B, S, -1))
-    print(attention)
+
+    print(f"attention final output",attention.shape)
     return attention
 
 class AttentionBlock(JaxComponent):

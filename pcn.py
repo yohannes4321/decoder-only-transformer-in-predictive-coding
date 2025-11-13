@@ -258,6 +258,7 @@ class PCN():
 
               
                 # --- STATIC SYNAPSES ---
+                
                 self.Qembed_zqkv = StaticSynapse(
                     "Qembed_zqkv", shape=(dim, dim),
                     bias_init=dist.constant(value=0.), key=subkeys[0]
@@ -449,9 +450,9 @@ class PCN():
                 project_process = (
                     JaxProcess(name="project_process")
 
-                    >> self.q_embed.advance_state
-                    >> self.q_zqkv.advance_state
-                    >> self.Qembed_zqkv.advance_state
+                    >> self.q_embed.advance_state # (16, 15) batch ,seq_len
+                    >> self.q_zqkv.advance_state 
+                    >> self.Qembed_zqkv.advance_state   # (batch *seq_len,dimensionality )
                     # embed → K
                     >> self.Q_zqkv_input_k.advance_state
                     >> self.q_inputk.advance_state
@@ -688,6 +689,8 @@ class PCN():
             self._dynamic(processes)
 
     def process(self, obs, lab, adapt_synapses=True):
+        print("obs shape",{obs.shape})
+        print("lab shape",{lab.shape})
         
 
         ## can think of the PCN as doing "PEM" -- projection, expectation, then maximization
@@ -695,13 +698,11 @@ class PCN():
         _lab = jnp.clip(lab, eps, 1. - eps)
         #self.circuit.reset(do_reset=True)
         # self.circuit.reset()
-        
-            
-
+       
         ## pin/tie inference synapses to be exactly equal to the forward ones
-        # self.Qembed_zqkv.weights.set(self.EmbddingHebbain.weights.value)
-        # self.Qembed_zqkv.biases.set(self.EmbddingHebbain.biases.value)
-        self.Q_zqkv_input_q.weights.set(self.W_zqkv_q.weights.value)
+        self.Qembed_zqkv.weights.set(self.EmbddingHebbain.weights.value)
+        self.Qembed_zqkv.biases.set(self.EmbddingHebbain.biases.value)
+        self.Q_zqkv_input_q.weights.set(self.W_zqkv_q.weights.value)  # int,512
         self.Q_zqkv_input_q.biases.set(self.W_zqkv_q.biases.value)
 
         self.Q_zqkv_input_k.weights.set(self.W_zqkv_k.weights.value)
@@ -746,8 +747,9 @@ class PCN():
         ## Perform P-step (projection step)
         self.circuit.clamp_input(obs)
         self.circuit.clamp_infer_target(_lab)
+        
         self.circuit.project(t=0., dt=1.) ## do projection/inference
-
+        
         ## initialize dynamics of generative model latents to projected states
         self.inputs_k.z.set(self.q_inputk.z.value)
         self.inputs_v.z.set(self.q_inputv.z.value)
