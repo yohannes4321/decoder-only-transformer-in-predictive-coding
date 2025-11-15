@@ -213,7 +213,7 @@ class AttentionHebbianSynapse(DenseSynapse):
         self.inputs_q = Compartment(jnp.zeros((batch_size * self.block_size, self.embed_dim)))
         self.inputs_k = Compartment(jnp.zeros((batch_size *self.block_size, self.embed_dim)))
         self.inputs_v = Compartment(jnp.zeros((batch_size* self.block_size, self.embed_dim)))
-        self.mask = Compartment(jnp.zeros((batch_size, seq_len, seq_len), dtype=bool))
+        self.mask = Compartment(jnp.zeros((batch_size, self.block_size, self.block_size), dtype=bool))
         self.outputs= Compartment(jnp.zeros((self.batch_size*self.batch_size,self.embed_dim)))
         self.key = Compartment(random.PRNGKey(0))
         
@@ -272,8 +272,10 @@ class AttentionHebbianSynapse(DenseSynapse):
 
 
     # class AttentionHebbianSynapse(DenseSynapse):
+   
+    @transition(output_compartments=["outputs","weights"])
     @staticmethod
-    def advance_state_hebbian(inputs_q,inputs_k,inputs_v, mask,n_heads,dropout_rate,weights,keys ,pre, post, vocab_size, embed_dim, block_size,
+    def advance_state_attention(inputs_q,inputs_k,inputs_v, mask,n_heads,dropout_rate,weights,keys ,pre, post,  embed_dim, batch_size,
                               w_bounds=1.0, w_decay=0.0, eta=0.001):
         """
         Custom Hebbian update + embedding computation (standalone, no @transition)
@@ -302,9 +304,9 @@ class AttentionHebbianSynapse(DenseSynapse):
             post_wght=post_wght)
         return dW, db
 
-    @transition(output_compartments=["inputs","outputs","opt_params", "weights", "biases", "dWeights", "dBiases"])
+    @transition(output_compartments=["inputs_q","inputs_k","inputs_v","outputs","opt_params", "weights", "biases", "dWeights", "dBiases"])
     @staticmethod
-    def evolve(inputs,outputs,vocab_size,embed_dim,block_size,opt, w_bound, is_nonnegative, sign_value, prior_type, prior_lmbda, pre_wght,
+    def evolve(inputs_q,inputs_k,inputs_v,outputs,vocab_size,embed_dim,block_size,opt, w_bound, is_nonnegative, sign_value, prior_type, prior_lmbda, pre_wght,
                 post_wght, bias_init, pre, post, weights, biases, opt_params):
         
         # tokens = jax.random.randint(key, (batch_size, seq_len), 0, vocab_size)
@@ -314,8 +316,7 @@ class AttentionHebbianSynapse(DenseSynapse):
 
         ## calculate synaptic update values
         dWeights, dBiases = AttentionHebbianSynapse._compute_update(
-            w_bound, is_nonnegative, sign_value, prior_type, prior_lmbda, pre_wght, post_wght,
-            pre, post, weights
+           inputs_k,inputs_q,inputs_v ,weights, pre, post,batch_size , embed_dim
         )
         ## conduct a step of optimization - get newly evolved synaptic weight value matrix
         if bias_init != None:
@@ -325,15 +326,17 @@ class AttentionHebbianSynapse(DenseSynapse):
             opt_params, [weights] = opt(opt_params, [weights], [dWeights])
         ## ensure synaptic efficacies adhere to constraints
         weights = _enforce_constraints(weights, w_bound, is_nonnegative=is_nonnegative)
-        return inputs,outputs,opt_params, weights, biases, dWeights, dBiases
+        return inputs_k,inputs_q,inputs_v,outputs,opt_params, weights, biases, dWeights, dBiases
 
-    @transition(output_compartments=["inputs", "outputs", "pre", "post", "dWeights", "dBiases"])
+    @transition(output_compartments=["inputs_q","inputs_k","inputs_v", "outputs", "pre", "post", "dWeights", "dBiases"])
     @staticmethod
     def reset(batch_size, shape):
-        preVals = jnp.zeros((batch_size, shape[0]))
-        postVals = jnp.zeros((batch_size, shape[1]))
+        preVals = jnp.zeros((batch_size*block_size, shape[0]))
+        postVals = jnp.zeros((batch_size*block_size, shape[1]))
         return (
-            preVals, # inputs
+            preVals,
+             preVals,
+              preVals, # inputs
             postVals, # outputs
             preVals, # pre
             postVals, # post
@@ -401,7 +404,7 @@ class AttentionHebbianSynapse(DenseSynapse):
         return lines
 
 if __name__ == '__main__':
-   
+    dropout_rate=0.5
     from ngcsimlib.context import Context
     with Context("Bar") as bar:
         Wab = AttentionHebbianSynapse(
@@ -415,7 +418,8 @@ if __name__ == '__main__':
     optim_type='adam',
     sign_value=-1.0,
     prior=("l1l2", 0.001),
-    prior_lmbda=(0.001, 0.01),  # (l2_strength, l1_ratio)
+    prior_lmbda=(0.001, 0.01), dropout_rate=dropout_rate
+     # (l2_strength, l1_ratio)
 )
 
 
@@ -424,17 +428,36 @@ if __name__ == '__main__':
     vocab_size = 30
     embed_dim = 128
     block_size = 10
-
+    
+# inputs_q,inputs_k,inputs_v, mask,n_heads,dropout_rate,weights,keys ,pre, post,  embed_dim, 
     # random inputs / pre / post
-    inputs = jax.random.randint(jax.random.PRNGKey(0), (batch_size, seq_len), 0, vocab_size)
+    inputs_q = jax.random.randint(jax.random.PRNGKey(0), (batch_size* seq_len,embed_dim), 0, vocab_size)
+    inputs_k = jax.random.randint(jax.random.PRNGKey(0), (batch_size* seq_len,embed_dim), 0, vocab_size)
+    inputs_v = jax.random.randint(jax.random.PRNGKey(0), (batch_size* seq_len,embed_dim), 0, vocab_size)
     pre = jax.random.normal(jax.random.PRNGKey(1), (batch_size, 2))
     post = jax.random.normal(jax.random.PRNGKey(2), (batch_size, 3))
     weights = jax.random.normal(jax.random.PRNGKey(3), (2, 3))
 
-    outputs, weights = AttentionHebbianSynapse.advance_state_hebbian(
-        inputs, weights, pre, post, vocab_size, embed_dim, block_size
-    )
+    outputs, weights = Wab.advance_state_attention(
+    inputs_q=inputs_q,
+    inputs_k=inputs_k,
+    inputs_v=inputs_v,
+    mask=None,
+    n_heads=1,
+    dropout_rate=dropout_rate,
+    weights=weights,
+    keys=Wab.key.value,
+    pre=pre,
+    post=post,
+    embed_dim=embed_dim,
+    batch_size=batch_size,
+    w_bounds=1.0,
+    w_decay=0.0,
+    eta=0.0004
+)
 
-    print("input_shpae", inputs.shape)
+
+
+    print("input_shpae", inputs_q.shape)
     print("Outputs shape:", outputs.shape)  # should be (batch_size * seq_len, embed_dim)
     print("Weights shape:", weights.shape)  # should be same as original (2,3)

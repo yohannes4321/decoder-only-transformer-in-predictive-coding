@@ -242,7 +242,7 @@ class EmbeddingHebbianSynapse(DenseSynapse):
         return drive_2d
 
     # class EmbeddingHebbianSynapse(DenseSynapse):
-    @transition(output_compartments=["inputs","outputs"])
+    @transition(output_compartments=["outputs","weights"])
     @staticmethod
     def advance_state_hebbian(inputs, weights, pre, post, vocab_size, embed_dim, block_size,dropout_rate,
                               w_bounds=1.0, w_decay=0.0, eta=0.001):
@@ -307,10 +307,12 @@ class EmbeddingHebbianSynapse(DenseSynapse):
     @transition(output_compartments=["inputs", "outputs", "pre", "post", "dWeights", "dBiases"])
     @staticmethod
     def reset(batch_size, shape):
-        preVals = jnp.zeros((batch_size, shape[0]))
-        postVals = jnp.zeros((batch_size, shape[1]))
+        preVals = jnp.zeros((batch_size*block_size, shape[0]))
+        postVals = jnp.zeros((batch_size* block_size, shape[1]))
         return (
-            preVals, # inputs
+            preVals,
+             preVals,
+              preVals, # inputs
             postVals, # outputs
             preVals, # pre
             postVals, # post
