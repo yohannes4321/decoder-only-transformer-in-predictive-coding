@@ -7,23 +7,17 @@ from ngcsimlib.compilers.process import transition
 import jax
 from functools import partial
 from config import Config as config
-import ngclearn.utils.weight_distribution as dist
+
 @partial(jit, static_argnums=[4, 5, 6])
 def _compute_attention(Q, K, V, mask, n_heads, d_head, dropout_rate, key):
     """
     Compute multi-head attention
-
     """
-    print("inside attention function start qkv  *************************************")
-    print(Q.shape)
-    print(K.shape)
-    print(V.shape)
-    print("inside attention function finised qkv*************************************")
     if Q.ndim == 2:
         # 2D input: (batch_size * seq_len, n_embed) -> reshape to 3D
         M, D = Q.shape
-        B = config.batch_size       
-        S = M // B  # batch_size
+        S = config.seq_len        
+        B = M // S  # batch_size
         Q_3d = Q.reshape(B, S, D)
         K_3d = K.reshape(B, S, D)
         V_3d = V.reshape(B, S, D)
@@ -54,8 +48,7 @@ def _compute_attention(Q, K, V, mask, n_heads, d_head, dropout_rate, key):
         
     attention = jnp.einsum("BHTS,BHSE->BHTE", score, v)
     attention = attention.transpose([0, 2, 1, 3]).reshape((B, S, -1))
-
-    print(f"attention final output",attention.shape)
+    
     return attention
 
 class AttentionBlock(JaxComponent):
@@ -82,72 +75,25 @@ class AttentionBlock(JaxComponent):
         batch_size: Batch size
     """
     
-    def __init__(self,name, dkey,n_heads, n_embed, seq_len, eta, wlb, wub, optim_type, act_fx,tau_m,dim, dropout_rate=0.5, batch_size=1, **kwargs):
+    def __init__(self, name, n_heads, n_embed, seq_len, dropout_rate=0.0, batch_size=1, **kwargs):
         super().__init__(name, **kwargs)
 
-        dkey, *subkeys = random.split(dkey, 10)
         self.n_heads = n_heads
         self.n_embed = n_embed
         self.dropout_rate = dropout_rate
         self.batch_size = batch_size
         self.seq_len = seq_len
         self.d_head = n_embed // n_heads
-        self.flat_dim = seq_len * n_embed
+
         # Input compartments
-        
-
-
-
-        
-        
+        self.inputs_q = Compartment(jnp.zeros((batch_size * seq_len, n_embed)))
+        self.inputs_k = Compartment(jnp.zeros((batch_size *seq_len, n_embed)))
+        self.inputs_v = Compartment(jnp.zeros((batch_size* seq_len, n_embed)))
+        self.mask = Compartment(jnp.zeros((batch_size, seq_len, seq_len), dtype=bool))
         
         self.key = Compartment(random.PRNGKey(0))
-        self.flat_outputs=Compartment(jnp.zeros((batch_size,self.flat_dim)))
         # Output compartment
-        self.outputs = Compartment(jnp.zeros((batch_size, seq_len, dim)))
-        self.Attention_out=RateCell("Attention_out",n_units=n_embed,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
-        self.Attentionout_Error = ErrorCell("Attentionout_Error",n_units=dim)
-        self.attention_to_mlp = HebbianSynapse(
-                    "attention_to_mlp", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-                )
-        self.Emlp1_to_attention = StaticSynapse(
-                    "mlp_to_attention", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
-                )
-        self.inputs_q = RateCell("inputs_q",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
-        self.input_q_ErrorCell=ErrorCell("input_q_ErrorCell",n_units=dim)
-
-        self.inputs_k = RateCell("inputs_k",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
-        self.input_k_ErrorCell=ErrorCell("input_k_ErrorCell",n_units=dim)
-        self.inputs_v = RateCell("inputs_v",n_units=dim,tau_m=tau_m,act_fx=act_fx,prior=("gaussian",0.),integration_type="euler")
-        self.input_v_ErrorCell=ErrorCell("input_v_ErrorCell",n_units=dim)
-        self.mask = Compartment(jnp.zeros((batch_size, seq_len, seq_len), dtype=bool))
-        self.inputs_k_attentionout = HebbianSynapse(
-                    "inputs_k_attentionout", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-                )
-        self.inputs_q_attentionout = HebbianSynapse(
-                    "inputs_q_attentionout", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-                )
-        self.inputs_v_attentionout = HebbianSynapse(
-                    "inputs_v_attentionout", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
-                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
-                )
-
-        #static 
-        
-
-        self.Eattentionout_input_k = StaticSynapse(
-                    "Eattentionout_input_k", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
-                )
-
-        self.Eattentionout_input_q = StaticSynapse(
-                    "Eattentionout_input_q", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
-                )
-        self.Eattentionout_input_v = StaticSynapse(
-                    "Eattentionout_input_v", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
-                )
+        self.outputs = Compartment(jnp.zeros((batch_size, seq_len, n_embed)))
 
     @transition(output_compartments=["outputs"])
     @staticmethod
@@ -158,7 +104,6 @@ class AttentionBlock(JaxComponent):
         attention = _compute_attention(
             inputs_q, inputs_k, inputs_v, mask, n_heads, d_head, dropout_rate, key
         )
-        
         return attention
 
     @transition(output_compartments=["inputs_q", "inputs_k", "inputs_v", "mask", "outputs"])

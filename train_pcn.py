@@ -5,7 +5,7 @@ from jax import random
 import jax
 import jax.numpy as jnp
 import numpy as np
-
+# from embedding import create_embeddings
 from Dataloader import BPETokenizer, PennTreeBankDataset, create_dataloader
 from ngclearn.utils.metric_utils import measure_CatNLL
 from pcn import PCN
@@ -13,15 +13,16 @@ from pcn import PCN
 # -----------------------------
 # Hyperparameters
 # -----------------------------
-BATCH_SIZE = 16
-BLOCK_SIZE = 128
+batch_size = 32
+block_size = 128
+n_embed = 512
 N_EPOCHS = 2         # change to something higher for real training
 SAVE_POINT = 1
 VERBOSITY = 1
 LEARNING_RATE = 1e-3
 SEED = 1234
 MAX_NEW_TOKENS = 50
-n_embed=32
+# n_embed=32
 
 
 n_heads=8
@@ -37,19 +38,19 @@ eos_token_id = bpe.tokenizer.eot_token if hasattr(bpe, "tokenizer") else None
 
 # update paths if necessary
 DATA_DIR = "./Data/tokenized_ptb"
-train_dataset = PennTreeBankDataset("train_ids.pkl", DATA_DIR, BLOCK_SIZE)
-val_dataset   = PennTreeBankDataset("valid_ids.pkl", DATA_DIR, BLOCK_SIZE)
+train_dataset = PennTreeBankDataset("train_ids.pkl", DATA_DIR, block_size)
+val_dataset   = PennTreeBankDataset("valid_ids.pkl", DATA_DIR, block_size)
 
-train_loader = create_dataloader(train_dataset, BATCH_SIZE, shuffle=True, pad_token_id=pad_id)
-val_loader   = create_dataloader(val_dataset, BATCH_SIZE, shuffle=False, pad_token_id=pad_id)
+train_loader = create_dataloader(train_dataset, batch_size, shuffle=True, pad_token_id=pad_id)
+val_loader   = create_dataloader(val_dataset, batch_size, shuffle=False, pad_token_id=pad_id)
 
 # -----------------------------
 # Model setup
 # -----------------------------
 dkey = random.PRNGKey(SEED)
-dim = 512   # model embedding dim (match your PCN instantiation)
-model = PCN(dkey=dkey, dim=dim, T=10, dt=1., tau_m=10., act_fx="tanh",
-            eta=0.001, exp_dir="exp", model_name="pcn_lm", block_size=BLOCK_SIZE,n_embed=n_embed,batch_size=BATCH_SIZE,n_heads=n_heads,dropout_rate=dropout_rate, loadDir=None)
+  # model embedding dim (match your PCN instantiation)
+model = PCN(dkey=dkey, dim=n_embed, T=10, dt=1., tau_m=10., act_fx="tanh",
+            eta=0.001, exp_dir="exp", model_name="pcn_lm", block_size=block_size,n_embed=n_embed,batch_size=batch_size,n_heads=n_heads,dropout_rate=dropout_rate, loadDir=None)
 print("Model built")
 
 # -----------------------------
@@ -96,7 +97,8 @@ for epoch in range(N_EPOCHS):
     for batch in train_loader:
         Xb = batch["input_ids"]
         Yb = batch["target_ids"]
-
+        
+        
         # NOTE: PCN process typically does inference + learning when adapt_synapses=True
         # ASSUMPTION: returns (yMu_0, yMu, EFE) where yMu_0 are logits/predictions
         yMu_0, yMu, efe = model.process(obs=Xb, lab=Yb, adapt_synapses=True)
@@ -130,7 +132,7 @@ print(f"Training completed in {(end_time - start_time) / 60:.2f} minutes")
 # -----------------------------
 # Generation helper
 # -----------------------------
-def generate(model, seed_ids, max_new_tokens=50, temperature=1.0, eos_token_id=None, block_size=BLOCK_SIZE, rng_seed=SEED):
+def generate(model, seed_ids, max_new_tokens=50, temperature=1.0, eos_token_id=None, block_size=block_size, rng_seed=SEED):
     """
     Generate new tokens autoregressively using the trained PCN.
     seed_ids: 1D array-like of token ids (seed prompt)

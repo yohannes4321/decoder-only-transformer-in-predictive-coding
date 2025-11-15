@@ -11,7 +11,7 @@ from ngclearn.components import GaussianErrorCell as ErrorCell, RateCell, Hebbia
 # -----------------------------
 BATCH_SIZE = 32
 BLOCK_SIZE = 128
-N_EMBD = 64
+N_EMBD = 512
 MAX_EPOCHS = 5
 
 # -----------------------------

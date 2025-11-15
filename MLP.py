@@ -67,6 +67,9 @@ class MLP(JaxComponent):
         self.Ezout_mlp2 = StaticSynapse(
             "Ezout_mlp2", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
         )
+        self.Emlp1_to_z_score = StaticSynapse(
+            "Emlp1_to_z_score", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
+        )
 
     # Add this method
     def all_components(self):

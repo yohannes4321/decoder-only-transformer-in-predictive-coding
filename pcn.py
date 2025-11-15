@@ -6,7 +6,7 @@ from ngcsimlib.context import Context
 from ngclearn.utils import JaxProcess
 import ngclearn.utils.weight_distribution as dist
 from ngclearn.utils.model_utils import drop_out,softmax,gelu,layer_normalize
-from EmbeddingHebbian import EmbeddingHebbain
+from EmbeddingHebbian import EmbeddingHebbianSynapse
 from ngclearn.utils.optim import adam
 from jax import jit,random,numpy as jnp 
 import jax
@@ -25,7 +25,7 @@ from functools import partial as bind
 
 
 class PCN():
-    def __init__(self, dkey, block_size,n_embed,batch_size,n_heads,dropout_rate,dim,T=10,
+    def __init__(self, dkey, block_size,dim,n_embed,batch_size,n_heads,dropout_rate,T=10,
                  dt=1., tau_m=10., act_fx="tanh", eta=0.001, exp_dir="exp",
                  model_name="pc_disc", loadDir=None, **kwargs):
 
@@ -62,14 +62,42 @@ class PCN():
 
                 self.MLP = MLP("mlp", dkey, dim, act_fx, tau_m, eta, wlb, wub, optim_type)
 
-                self.Attention=AttentionBlock("Attention",dkey,n_heads=n_heads,n_embed=n_embed,seq_len=14,dropout_rate=dropout_rate,batch_size=batch_size,tau_m=tau_m,dim=dim,eta=0.001,wlb=wlb,wub=wub,optim_type=optim_type,act_fx='tanh')
-                self.Embedding = RateCell("Embedding", n_units=dim, tau_m=0., act_fx="identity")
+                self.Attention_Hebbian= AttentionBlock(
+    name="attn_block",
+    n_heads=n_heads,
+    n_embed=n_embed,
+    block_size=block_size,
+    dropout_rate=dropout_rate,
+    batch_size=batch_size,
+    shape=(n_embed,n_embed),
+    eta=eta,
+    weight_init=dist.uniform(amin=wlb, amax=wub),
+)
+                self.zEmbedding = RateCell("Embedding", n_units=dim, tau_m=0., act_fx="identity")
                 self.zqkv = RateCell("zqkv", n_units=dim, tau_m=tau_m, act_fx=act_fx, prior=("gaussian", 0.), integration_type="euler")
                 self.zqkv_error = ErrorCell("zqkv_error", n_units=dim)
-
-                self.EmbddingHebbain = EmbeddingHebbain("EmbddingHebbain", dkey, n_embed=n_embed,vocab_size=vocab_size,block_size=block_size,dropout_rate=dropout_rate,batch_size=batch_size,eta=eta,wlb=wlb,wub=wub,optim_type=optim_type,**kwargs )
+             
+                self.EmbddingHebbain = EmbeddingHebbianSynapse(
+    name="emb_syn",
+    vocab_size=vocab_size,
+    n_embed=n_embed,
+    block_size=block_size,
+    batch_size=batch_size,
+    weight_init=dist.uniform(amin=wlb, amax=wub),
+    eta=eta,
+    w_bound=0.,
+    key=dkey
+    
+)
+# )
                 self.z_out_error=ErrorCell("z_out_error", n_units=dim)
                 self.z_out=RateCell("z_out",n_units=dim,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type='euler')
+
+                self.z_score_Error=ErrorCell("z_score_Error", n_units=dim)
+                self.z_score=RateCell("z_score",n_units=dim,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type='euler')
+
+
+
                 self.zout_targetlogit=HebbianSynapse(
                         "zout_targetlogit", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                         bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
@@ -81,67 +109,51 @@ class PCN():
                 self.target_logit =RateCell("target_logit",n_units=dim,tau_m=tau_m,act_fx="relu",prior=("gaussian",0.),integration_type='euler')
 
                 self.W_zqkv_q=HebbianSynapse(
-                "W_zqkv_q", shape=(n_embed,n_embed), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                "W_zqkv_q", shape=(dim,dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                             bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
                 
 
                 self.W_zqkv_k=HebbianSynapse(
-                "W_zqkv_k", shape=(n_embed, n_embed), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                "W_zqkv_k", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                 bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
                 self.W_zqkv_v=HebbianSynapse(
-                "W_zqkv_v", shape=(n_embed, n_embed), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                "W_zqkv_v", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
                 bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
+                self.Attention_to_mlp = HebbianSynapse(
+                    "Attention_to_mlp", shape=(dim, dim), eta=eta, weight_init=dist.uniform(amin=wlb, amax=wub),
+                    bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
+                )
+                self.Emlp1_to_attention = StaticSynapse(
+                            "mlp_to_attention", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
+                        )
+                self.Ezscore_zqkv = StaticSynapse(
+                            "Ezscore_zqkv", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
+                        )
 
                 
 
                 # forward connection
-                self.EmbddingHebbain.inputs << self.Embedding.zF
+                # TODO CHECK IF EmbeddingHebbian works 
+                self.EmbddingHebbain.inputs << self.zEmbedding.zF
                 self.zqkv_error.mu<< self.EmbddingHebbain.outputs
                 self.zqkv_error.target << self.zqkv.z
 
-              
-
-
-
-
-
+                # adding qkv to the attention 
                 self.W_zqkv_q.inputs << self.zqkv.zF
-                # self.Attention.inputs_q.j << self.W_zqkv_q.outputs # z is needed to make attention compuation 
-                self.Attention.input_q_ErrorCell.mu << self.W_zqkv_q.outputs
-                self.Attention.input_q_ErrorCell.target << self.Attention.inputs_q.z
-
+                self.Attention_Hebbian.inputs_q << self.W_zqkv_q.outputs
                 self.W_zqkv_k.inputs << self.zqkv.zF
-                # self.Attention.inputs_k.j << self.W_zqkv_k.outputs
-                self.Attention.input_k_ErrorCell.mu << self.W_zqkv_k.outputs
-                self.Attention.input_k_ErrorCell.target << self.Attention.inputs_k.z
-
-
+                self.Attention_Hebbian.inputs_k << self.W_zqkv_k.outputs
                 self.W_zqkv_v.inputs << self.zqkv.zF
-                # self.Attention.inputs_v.j << self.W_zqkv_v.outputs
-                self.Attention.input_v_ErrorCell.mu << self.W_zqkv_v.outputs
-                self.Attention.input_v_ErrorCell.target << self.Attention.inputs_v.z
+                self.Attention_Hebbian.inputs_v << self.W_zqkv_v.outputs
+                self.z_score_Error.mu <<  self.Attention_Hebbian.outputs
+                self.z_score_Error.target << self.z_score.z
+    
 
-                # TODO I may be correct or overwrite it and only take inputs_v_attentionout 
-                self.Attention.inputs_k_attentionout.inputs << self.Attention.inputs_k.zF
-                self.Attention.Attentionout_Error.mu << self.Attention.inputs_k_attentionout.outputs
-                self.Attention.Attentionout_Error.target << self.Attention.Attention_out.z
-
-                
-                self.Attention.inputs_q_attentionout.inputs << self.Attention.inputs_q.zF
-                self.Attention.Attentionout_Error.mu << self.Attention.inputs_q_attentionout.outputs
-                self.Attention.Attentionout_Error.target << self.Attention.Attention_out.z
-                
-                self.Attention.inputs_v_attentionout.inputs << self.Attention.inputs_v.zF
-                self.Attention.Attentionout_Error.mu << self.Attention.inputs_v_attentionout.outputs
-                self.Attention.Attentionout_Error.target << self.Attention.Attention_out.z
-                #
-
-
-                self.Attention.attention_to_mlp.inputs << self.Attention.Attention_out.zF
-                self.MLP.mlp_1_error.mu << self.Attention.attention_to_mlp.outputs
+                self.Attention_to_mlp.inputs << self.z_score.zF
+                self.MLP.mlp_1_error.mu << self.Attention_to_mlp.outputs
                 self.MLP.mlp_1_error.target << self.MLP.mlp_1.z
 
 
@@ -160,26 +172,20 @@ class PCN():
 
 
 
-
+    
                 #TODO feedback start here 
                 #feedback input_k,q,v and attention out
-                self.Attention.Eattentionout_input_k.inputs << self.Attention.Attentionout_Error.dmu
-                self.Attention.inputs_k.j  << self.Attention.Eattentionout_input_k.outputs
-                self.Attention.inputs_k.j_td << self.Attention.input_k_ErrorCell.dtarget
+        
+                self.Ezscore_zqkv.inputs << self.z_score_Error.dmu
+                self.zqkv.j<< self.Ezscore_zqkv.outputs
+                self.zqkv.j_td << self.zqkv_error.dtarget
 
-
-                self.Attention.Eattentionout_input_q.inputs << self.Attention.Attentionout_Error.dmu
-                self.Attention.inputs_q.j  << self.Attention.Eattentionout_input_q.outputs
-                self.Attention.inputs_q.j_td << self.Attention.input_q_ErrorCell.dtarget
-
-                self.Attention.Eattentionout_input_v.inputs << self.Attention.Attentionout_Error.dmu
-                self.Attention.inputs_q.j  << self.Attention.Eattentionout_input_v.outputs
-                self.Attention.inputs_q.j_td << self.Attention.input_v_ErrorCell.dtarget
+               
 
                 # feedback attention out  mlp 1
-                self.MLP.Emlp1_to_attentionout.inputs << self.MLP.mlp_1_error.dmu
-                self.Attention.Attention_out.j << self.MLP.Emlp1_to_attentionout.outputs
-                self.Attention.Attention_out.j_td <<     self.Attention.Attentionout_Error.dtarget
+                self.MLP.Emlp1_to_z_score.inputs << self.MLP.mlp_1_error.dmu
+                self.z_score.j << self.MLP.Emlp1_to_z_score.outputs
+                self.z_score.j_td << self.z_score_Error.dtarget
 
 
                 # feedback between mlp1 and mlp2
@@ -197,35 +203,26 @@ class PCN():
                 self.z_out.j << self.Etargetlogit_zout.outputs
                 self.z_out.j_td << self.z_out_error.dtarget
 
+
+
+
                 #TODO 2 FACtor hebbian update
-                self.W_zqkv_q.pre  << self.Embedding.zF
-                self.W_zqkv_q.post << self.Attention.input_q_ErrorCell.dmu
+      
 
-                self.W_zqkv_k.pre << self.Embedding.zF
-                self.W_zqkv_k.post << self.Attention.input_k_ErrorCell.dmu
 
-                self.W_zqkv_v.pre << self.Embedding.zF
-                self.W_zqkv_v.post << self.Attention.input_v_ErrorCell.dmu
+                self.EmbddingHebbain.pre << self.zEmbedding.zF
+                self.EmbddingHebbain.post << self.zqkv_error.dmu
 
 
 
 
 
-                self.Attention.inputs_k_attentionout.pre << self.Attention.inputs_k.zF
-                self.Attention.inputs_k_attentionout.post << self.Attention.Attentionout_Error.dmu  # if needed
-
-                self.Attention.inputs_q_attentionout.pre << self.Attention.inputs_q.zF
-                self.Attention.inputs_q_attentionout.post << self.Attention.Attentionout_Error.dmu  # if needed
-
-                self.Attention.inputs_v_attentionout.pre << self.Attention.inputs_v.zF
-                self.Attention.inputs_v_attentionout.post << self.Attention.Attentionout_Error.dmu  # if needed
+                self.Attention_Hebbian.pre << self.zqkv.zF
+                self.Attention_Hebbian.post << self.z_score_Error.dmu # if needed
 
 
-
-
-
-                self.Attention.attention_to_mlp.pre << self.Attention.Attention_out.zF
-                self.Attention.attention_to_mlp.post << self.MLP.mlp_1_error.dmu     # if needed
+                self.Attention_to_mlp.pre << self.z_score.zF
+                self.Attention_to_mlp.post << self.MLP.mlp_1_error.dmu     # if needed
 
                 
                 self.MLP.mlp1_mlp2.pre << self.MLP.mlp_1.zF
@@ -244,17 +241,15 @@ class PCN():
                 #TODO PROJECTION
                 self.q_embed = RateCell("q_embed", n_units=dim, tau_m=0., act_fx="identity")
                 self.q_zqkv = RateCell("q_zqkv", n_units=dim, tau_m=0., act_fx=act_fx)
-                self.q_inputk = RateCell("q_inputk", n_units=dim, tau_m=0., act_fx=act_fx)
-                self.q_inputv = RateCell("q_inputv", n_units=dim, tau_m=0., act_fx=act_fx)
-                self.q_inputq = RateCell("q_inputq", n_units=dim, tau_m=0., act_fx=act_fx)
-                self.q_Attentionscore = RateCell("q_Attentionscore", n_units=dim, tau_m=0., act_fx=act_fx)
+              
+                self.q_score = RateCell("q_score", n_units=dim, tau_m=0., act_fx=act_fx)
                 self.q_mlp1 = RateCell("q_mlp1", n_units=4 *dim, tau_m=0., act_fx=act_fx)
                 self.q_mlp2 = RateCell("q_mlp2", n_units=dim, tau_m=0., act_fx=act_fx)
                 self.q_out = RateCell("q_out", n_units=dim, tau_m=0., act_fx=act_fx)
                 self.qtarget_logits = RateCell("qtarget_logits", n_units=dim, tau_m=0., act_fx="identity")
                 self.qError_target_logit=ErrorCell("qError_target_logit", n_units=dim)
-# #                 # --- ERROR CELL ---
-#                 self.e_Qtarget = ErrorCell("e_Qtarget", n_units=dim)
+#                 # --- ERROR CELL ---
+                self.e_Qtarget = ErrorCell("e_Qtarget", n_units=dim)
 
               
                 # --- STATIC SYNAPSES ---
@@ -263,30 +258,13 @@ class PCN():
                     "Qembed_zqkv", shape=(dim, dim),
                     bias_init=dist.constant(value=0.), key=subkeys[0]
                 )
-                self.Q_zqkv_input_k = StaticSynapse(
-                    "Q_zqkv_input_k", shape=(dim, dim),
+                
+                
+                self.Qqkv_score = StaticSynapse(
+                    "Qqkv_score", shape=(dim, dim),
                     bias_init=dist.constant(value=0.), key=subkeys[0]
                 )
-                self.Q_zqkv_input_v = StaticSynapse(
-                    "Q_zqkv_input_v", shape=(dim, dim),
-                    bias_init=dist.constant(value=0.), key=subkeys[0]
-                )
-                self.Q_zqkv_input_q = StaticSynapse(
-                    "Q_zqkv_input_q", shape=(dim, dim),
-                    bias_init=dist.constant(value=0.), key=subkeys[0]
-                )
-                self.Qinputk_attentionscore = StaticSynapse(
-                    "Qinputk_attentionscore", shape=(dim, dim),
-                    bias_init=dist.constant(value=0.), key=subkeys[0]
-                )
-                self.Qinputq_attentionscore = StaticSynapse(
-                    "Qinputq_attentionscore", shape=(dim, dim),
-                    bias_init=dist.constant(value=0.), key=subkeys[0]
-                )
-                self.Qinputv_attentionscore = StaticSynapse(
-                    "Qinputv_attentionscore", shape=(dim, dim),
-                    bias_init=dist.constant(value=0.), key=subkeys[0]
-                )
+                
 
 
                 self.QAttention_mlp1 = StaticSynapse(
@@ -312,27 +290,11 @@ class PCN():
                 self.Qembed_zqkv.inputs << self.q_embed.zF
                 self.q_zqkv.j << self.Qembed_zqkv.outputs
 
-                self.Q_zqkv_input_k.inputs << self.q_zqkv.zF
-                self.q_inputk.j << self.Q_zqkv_input_k.outputs
-
-                self.Q_zqkv_input_v.inputs << self.q_zqkv.zF
-                self.q_inputv.j << self.Q_zqkv_input_v.outputs
-
-                self.Q_zqkv_input_q.inputs << self.q_zqkv.zF
-                self.q_inputq.j << self.Q_zqkv_input_q.outputs
-
-                # Attention score receives projections from K, Q, V
-                self.Qinputk_attentionscore.inputs << self.q_inputk.zF
-                self.q_Attentionscore.j << self.Qinputk_attentionscore.outputs
-
-                self.Qinputq_attentionscore.inputs << self.q_inputq.zF
-                self.q_Attentionscore.j << self.Qinputq_attentionscore.outputs
-
-                self.Qinputv_attentionscore.inputs << self.q_inputv.zF
-                self.q_Attentionscore.j << self.Qinputv_attentionscore.outputs
+                self.Qqkv_score.inputs << self.q_zqkv.zF
+                self.q_score.j<< self.Qqkv_score.outputs
 
                 # Attention → MLP1
-                self.QAttention_mlp1.inputs << self.q_Attentionscore.zF
+                self.QAttention_mlp1.inputs << self.q_score.zF
                 self.q_mlp1.j << self.QAttention_mlp1.outputs
 
                 # MLP1 → MLP2
@@ -350,43 +312,35 @@ class PCN():
                 self.qError_target_logit.target << self.qtarget_logits.z
 
                 advance_process = (JaxProcess(name="advance_process")
-                        >> self.Embedding.advance_state
-                        >> self.zqkv.advance_state
-                        >> self.zqkv_error.advance_state
-                        >> self.EmbddingHebbain.advance_state
-                        >> self.Attention.Eattentionout_input_k.advance_state
-                        >> self.Attention.Eattentionout_input_q.advance_state
-                        >> self.Attention.Eattentionout_input_v.advance_state
-                        >> self.MLP.Emlp1_to_attentionout.advance_state
-                        >> self.MLP.Emlp2_mlp1.advance_state
-                        >> self.MLP.Ezout_mlp2.advance_state
-                        >> self.Etargetlogit_zout.advance_state
-                        >> self.W_zqkv_q.advance_state 
-                        >> self.W_zqkv_k.advance_state 
-                        >> self.W_zqkv_v.advance_state
-                        >> self.Embedding.advance_state
-                        >> self.Attention.inputs_q.advance_state
-                        >> self.Attention.input_q_ErrorCell.advance_state
-                        >> self.Attention.inputs_k.advance_state
-                        >> self.Attention.input_k_ErrorCell.advance_state
-                        >> self.Attention.inputs_v.advance_state
-                        >> self.Attention.input_v_ErrorCell.advance_state
-                        >> self.Attention.inputs_k_attentionout.advance_state
-                        >> self.Attention.inputs_q_attentionout.advance_state
-                        >> self.Attention.inputs_v_attentionout.advance_state
-                        >> self.Attention.Attentionout_Error.advance_state
-                        >> self.Attention.attention_to_mlp.advance_state
-                        >> self.MLP.mlp_1_error.advance_state
-                        >> self.MLP.mlp_1.advance_state
-                        >> self.MLP.mlp1_mlp2.advance_state
-                        >> self.MLP.mlp_2_error.advance_state
-                        >> self.MLP.mlp_2.advance_state
-                        >> self.MLP.mlp2_zout.advance_state
-                        >> self.z_out_error.advance_state
-                        >> self.z_out.advance_state
-                        >> self.zout_targetlogit.advance_state
-                        >> self.target_logit_error.advance_state
-                        >> self.target_logit.advance_state
+>> self.zEmbedding.advance_state
+>> self.zqkv_error.advance_state
+>> self.zqkv.advance_state
+>> self.W_zqkv_q.advance_state
+>> self.Attention_Hebbian.advance_state
+>> self.W_zqkv_k.advance_state
+>> self.W_zqkv_v.advance_state
+>> self.z_score_Error.advance_state
+>> self.z_score.advance_state
+>> self.Attention_to_mlp.advance_state
+>> self.MLP.mlp_1_error.advance_state
+>> self.MLP.mlp_1.advance_state
+>> self.MLP.mlp1_mlp2.advance_state
+>> self.MLP.mlp_2_error.advance_state
+>> self.MLP.mlp_2.advance_state
+>> self.MLP.mlp2_zout.advance_state
+>> self.z_out_error.advance_state
+>> self.z_out.advance_state
+>> self.zout_targetlogit.advance_state
+>> self.target_logit_error.advance_state
+>> self.target_logit.advance_state
+>> self.Ezscore_zqkv.advance_state
+>> self.MLP.Emlp1_to_z_score.advance_state
+>> self.MLP.Emlp2_mlp1.advance_state
+>> self.MLP.Ezout_mlp2.advance_state
+>> self.Etargetlogit_zout.advance_state
+>> self.EmbddingHebbain.advance_state
+
+
                 )
 
 
@@ -394,243 +348,182 @@ class PCN():
 
 
                 reset_process = (JaxProcess(name="reset_process")
+>> self.zEmbedding.reset
+>> self.zqkv_error.reset
+>> self.zqkv.reset
+>> self.W_zqkv_q.reset
+>> self.W_zqkv_k.reset
+>> self.W_zqkv_v.reset
+>> self.z_score_Error.reset
+>> self.z_score.reset
+>> self.MLP.mlp_1_error.reset
+>> self.MLP.mlp_1.reset
+>> self.MLP.mlp1_mlp2.reset
+>> self.MLP.mlp_2_error.reset
+>> self.MLP.mlp_2.reset
+>> self.z_out_error.reset
+>> self.z_out.reset
+>> self.target_logit_error.reset
+>> self.target_logit.reset
+>> self.zqkv.reset
+>> self.q_embed.reset
+>> self.q_zqkv.reset
+>> self.q_score.reset
+>> self.q_mlp1.reset
+>> self.q_mlp2.reset
+>> self.q_out.reset
+>> self.qtarget_logits.reset
+>> self.qError_target_logit.reset
 
-                            >> self.q_zqkv.reset
-                            >> self.zqkv.reset
-                            >> self.zqkv_error.reset
-                            >> self.Embedding.reset
-                            >> self.q_embed.reset
-                            >> self.q_inputk.reset
-                            >> self.q_inputv.reset
-                            >> self.q_inputq.reset
-                            >> self.q_Attentionscore.reset
-                            >> self.q_mlp1.reset
-                            >> self.q_mlp2.reset
-                            >> self.q_out.reset
-                            >> self.qtarget_logits.reset
-                            >> self.qError_target_logit.reset
-                            >> self.Attention.inputs_q.reset
-                            >> self.Attention.input_q_ErrorCell.reset
-                            >> self.Attention.inputs_k.reset
-                            >> self.Attention.input_k_ErrorCell.reset
-                            >> self.Attention.inputs_v.reset
-                            >> self.Attention.input_v_ErrorCell.reset
-                            >> self.Attention.Attentionout_Error.reset
-                            >> self.MLP.mlp_1_error.reset
-                            >> self.MLP.mlp_1.reset
-                            >> self.MLP.mlp_2_error.reset
-                            >> self.MLP.mlp_2.reset
-                            >> self.z_out_error.reset
-                            >> self.z_out.reset
-                            >> self.target_logit_error.reset
-                            >> self.target_logit.reset
+
 
                         )
 
 
-                evolve_process = (
-                        JaxProcess(name="evolve_process")
-                        
-                        >> self.W_zqkv_q.evolve
-                        >> self.W_zqkv_k.evolve
-                        >> self.W_zqkv_v.evolve
+                # # evolve_process = (
+                #         JaxProcess(name="evolve_process")
+                #         >> self.EmbddingHebbain.evolve
+                #         >> self.zout_targetlogit.evolve
+                #         >> self.Attention_Hebbian.evolve
+                #         >> self.zout_targetlogit.evolve
+                #         >> self.Attention_to_mlp.evolve
 
-                        >> self.Attention.inputs_k_attentionout.evolve
-                        >> self.Attention.inputs_q_attentionout.evolve
-                        >> self.Attention.inputs_v_attentionout.evolve
 
-                        >> self.Attention.attention_to_mlp.evolve
 
-                        >> self.MLP.mlp1_mlp2.evolve
-                        >> self.MLP.mlp2_zout.evolve
 
-                        >> self.zout_targetlogit.evolve
-                    )
+                    # )
 
                 project_process = (
                     JaxProcess(name="project_process")
+                
+>> self.q_embed.advance_state
+>> self.q_zqkv.advance_state
+>> self.q_score.advance_state
+>> self.q_mlp1.advance_state
+>> self.q_mlp2.advance_state
+>> self.q_out.advance_state
+>> self.qtarget_logits.advance_state
+>> self.qError_target_logit.advance_state
+>> self.Qembed_zqkv.advance_state
+>> self.Qqkv_score.advance_state
+>> self.QAttention_mlp1.advance_state
+>> self.Qmlp1_mlp2.advance_state
+>> self.Qmlp2_out.advance_state
+>> self.Qout_target.advance_state
 
-                    >> self.q_embed.advance_state # (16, 15) batch ,seq_len
-                    >> self.q_zqkv.advance_state 
-                    >> self.Qembed_zqkv.advance_state   # (batch *seq_len,dimensionality )
-                    # embed → K
-                    >> self.Q_zqkv_input_k.advance_state
-                    >> self.q_inputk.advance_state
 
-                    # embed → V
-                    >> self.Q_zqkv_input_v.advance_state
-                    >> self.q_inputv.advance_state
 
-                    # embed → Q
-                    >> self.Q_zqkv_input_q.advance_state
-                    >> self.q_inputq.advance_state
-
-                    # K → AttentionScore
-                    >> self.Qinputk_attentionscore.advance_state
-                    # Q → AttentionScore
-                    >> self.Qinputq_attentionscore.advance_state
-                    # V → AttentionScore
-                    >> self.Qinputv_attentionscore.advance_state
-
-                    >> self.q_Attentionscore.advance_state
-
-                    # AttentionScore → MLP1
-                    >> self.QAttention_mlp1.advance_state
-                    >> self.q_mlp1.advance_state
-
-                    # MLP1 → MLP2
-                    >> self.Qmlp1_mlp2.advance_state
-                    >> self.q_mlp2.advance_state
-
-                    # MLP2 → out
-                    >> self.Qmlp2_out.advance_state
-                    >> self.q_out.advance_state
-
-                    # out → target logits
-                    >> self.Qout_target.advance_state
-                    >> self.qtarget_logits.advance_state
-
-                    # final error cell
-                    >> self.qError_target_logit.advance_state
+                   
                 )
-                process = (reset_process, advance_process, evolve_process, project_process)
+                process = (reset_process, advance_process,project_process)
 
                 self._dynamic(process)
     def _dynamic(self,process):
         vars = self.circuit.get_components( 
+"self.zEmbedding",
+"self.zqkv_error",
+"self.zqkv",
+"self.W_zqkv_q",
+"self.Attention_Hebbian",
+"self.W_zqkv_k",
+"self.W_zqkv_v",
+"self.z_score_Error",
+"self.z_score",
+"self.Attention_to_mlp",
+"self.mlp_1_error",
+"self.mlp_1",
+"self.mlp1_mlp2",
+"self.mlp_2_error",
+"self.mlp_2",
+"self.mlp2_zout",
+"self.z_out_error",
+"self.z_out",
+"self.zout_targetlogit",
+"self.target_logit_error",
+"self.target_logit",
+"self.Ezscore_zqkv",
+"self.Emlp1_to_z_score",
+"self.Emlp2_mlp1",
+"self.Ezout_mlp2",
+"self.Etargetlogit_zout",
+"self.EmbddingHebbain",
+"self.q_embed",
+"self.q_zqkv",
+"self.q_score",
+"self.q_mlp1",
+"self.q_mlp2",
+"self.q_out",
+"self.qtarget_logits",
+"self.qError_target_logit",
+"self.Qembed_zqkv",
+"self.Qqkv_score",
+"self.QAttention_mlp1",
+"self.Qmlp1_mlp2",
+"self.Qmlp2_out",
+"self.Qout_target",
 
-        "Embedding",
-        "zqkv",
-        "zqkv_error",
-        "EmbddingHebbain",
-        "Eattentionout_input_k",
-        "Eattentionout_input_q",
-        "Eattentionout_input_v",
-        "Emlp1_to_attentionout",
-        "Emlp2_mlp1",
-        "Ezout_mlp2",
-        "Etargetlogit_zout",
-        "W_zqkv_q",
-        "W_zqkv_k",
-        "W_zqkv_v",
-        "inputs_q",
-        "input_q_ErrorCell",
-        "inputs_k",
-        "input_k_ErrorCell",
-        "inputs_v",
-        "input_v_ErrorCell",
-        "inputs_k_attentionout",
-        "inputs_q_attentionout",
-        "inputs_v_attentionout",
-        "Attentionout_Error",
-        "attention_to_mlp",
-        "mlp_1_error",
-        "mlp_1",
-        "mlp1_mlp2",
-        "mlp_2_error",
-        "mlp_2",
-        "mlp2_zout",
-        "z_out_error",
-        "z_out",
-        "zout_targetlogit",
-        "target_logit_error",
-        "target_logit",
-        "q_embed",
-        "q_inputk",
-        "q_inputv",
-        "q_inputq",
-        "q_Attentionscore",
-        "q_mlp1",
-        "q_mlp2",
-        "q_out",
-        "qtarget_logits",
-        "qError_target_logit",
-        "Q_zqkv_input_k",
-        "Q_zqkv_input_v",
-        "Q_zqkv_input_q",
-        "Qinputk_attentionscore",
-        "Qinputq_attentionscore",
-        "Qinputv_attentionscore",
-        "QAttention_mlp1",
-        "Qmlp1_mlp2",
-        "Qmlp2_out",
-        "Qout_target"
         )
 
-    # # Get components
-    #     *component_names)
+#     # # Get components
+#     #     *component_names)
 
-    # Unpack into attributes
-        (
-            self.Embedding,
-            self.zqkv,
-            self.zqkv_error,
-            self.EmbddingHebbain,
-            self.Eattentionout_input_k,
-            self.Eattentionout_input_q,
-            self.Eattentionout_input_v,
-            self.Emlp1_to_attentionout,
-            self.Emlp2_mlp1,
-            self.Ezout_mlp2,
-            self.Etargetlogit_zout,
-            self.W_zqkv_q,
-            self.W_zqkv_k,
-            self.W_zqkv_v,
-            self.inputs_q,
-            self.input_q_ErrorCell,
-            self.inputs_k,
-            self.input_k_ErrorCell,
-            self.inputs_v,
-            self.input_v_ErrorCell,
-            self.inputs_k_attentionout,
-            self.inputs_q_attentionout,
-            self.inputs_v_attentionout,
-            self.Attentionout_Error,
-            self.attention_to_mlp,
-            self.mlp_1_error,
-            self.mlp_1,
-            self.mlp1_mlp2,
-            self.mlp_2_error,
-            self.mlp_2,
-            self.mlp2_zout,
-            self.z_out_error,
-            self.z_out,
-            self.zout_targetlogit,
-            self.target_logit_error,
-            self.target_logit,
-            self.q_embed,
-            self.q_inputk,
-            self.q_inputv,
-            self.q_inputq,
-            self.q_Attentionscore,
-            self.q_mlp1,
-            self.q_mlp2,
-            self.q_out,
-            self.qtarget_logits,
-            self.qError_target_logit,
-            self.Q_zqkv_input_k,
-            self.Q_zqkv_input_v,
-            self.Q_zqkv_input_q,
-            self.Qinputk_attentionscore,
-            self.Qinputq_attentionscore,
-            self.Qinputv_attentionscore,
-            self.QAttention_mlp1,
-            self.Qmlp1_mlp2,
-            self.Qmlp2_out,
-            self.Qout_target
+#     # Unpack into attributes
+        (   
+            self.zEmbedding,
+self.zqkv_error,
+self.zqkv,
+self.W_zqkv_q,
+self.Attention_Hebbian,
+self.W_zqkv_k,
+self.W_zqkv_v,
+self.z_score_Error,
+self.z_score,
+self.Attention_to_mlp,
+self.mlp_1_error,
+self.mlp_1,
+self.mlp1_mlp2,
+self.mlp_2_error,
+self.mlp_2,
+self.mlp2_zout,
+self.z_out_error,
+self.z_out,
+self.zout_targetlogit,
+self.target_logit_error,
+self.target_logit,
+self.Ezscore_zqkv,
+self.Emlp1_to_z_score,
+self.Emlp2_mlp1,
+self.Ezout_mlp2,
+self.Etargetlogit_zout,
+self.EmbddingHebbain,
+self.q_embed,
+self.q_zqkv,
+self.q_score,
+self.q_mlp1,
+self.q_mlp2,
+self.q_out,
+self.qtarget_logits,
+self.qError_target_logit,
+self.Qembed_zqkv,
+self.Qqkv_score,
+self.QAttention_mlp1,
+self.Qmlp1_mlp2,
+self.Qmlp2_out,
+self.Qout_target,
+
         ) = vars
+        self.nodes = vars
 
-                # print(len(D))
+        reset_proc, advance_proc,  project_proc = process
 
-        reset_proc, advance_proc, evolve_proc, project_proc = process
 
         self.circuit.wrap_and_add_command(jit(reset_proc.pure), name="reset")
         self.circuit.wrap_and_add_command(jit(advance_proc.pure), name="advance")
         self.circuit.wrap_and_add_command(jit(project_proc.pure), name="project")
-        self.circuit.wrap_and_add_command(jit(evolve_proc.pure), name="evolve")
+        # self.circuit.wrap_and_add_command(jit(evolve_proc.pure), name="evolve")
         @Context.dynamicCommand
         def clamp_input(x):
-            self.Embedding.j.set(x)
+            self.zEmbedding.j.set(x)
             self.q_embed.j.set(x)
         # self.circuit.wrap_and_add_command((clamp_input), name="clamp_input")
 
@@ -644,49 +537,49 @@ class PCN():
         # self.circuit.wrap_and_add_command((clamp_infer_target), name="clamp_infer_target")
         
 
-    def save_to_disk(self, params_only=False):
-        """
-        Saves current model parameter values to disk
+    # def save_to_disk(self, params_only=False):
+    #     """
+    #     Saves current model parameter values to disk
 
-        Args:
-            params_only: if True, save only param arrays to disk (and not JSON sim/model structure)
-        """
-        if params_only:
-            model_dir = "{}/{}/custom".format(self.exp_dir, self.model_name)
-            # Assuming all these are attributes in your class
-            self.EmbddingHebbain(model_dir)
-            self.W_zqkv_q.save(model_dir)
-            self.W_zqkv_k.save(model_dir)
-            self.W_zqkv_v.save(model_dir)
+    #     Args:
+    #         params_only: if True, save only param arrays to disk (and not JSON sim/model structure)
+    #     """
+    #     if params_only:
+    #         model_dir = "{}/{}/custom".format(self.exp_dir, self.model_name)
+    #         # Assuming all these are attributes in your class
+    #         self.EmbddingHebbain(model_dir)
+    #         self.W_zqkv_q.save(model_dir)
+    #         self.W_zqkv_k.save(model_dir)
+    #         self.W_zqkv_v.save(model_dir)
 
-            self.inputs_k_attentionout.save(model_dir)
-            self.inputs_q_attentionout.save(model_dir)
-            self.inputs_v_attentionout.save(model_dir)
+    #         self.inputs_k_z_score.save(model_dir)
+    #         self.inputs_q_z_score.save(model_dir)
+    #         self.inputs_v_z_score.save(model_dir)
 
-            self.attention_to_mlp.save(model_dir)
+    #         self.Attention_Hebbian_to_mlp.save(model_dir)
 
-            self.mlp1_mlp2.save(model_dir)
-            self.mlp2_zout.save(model_dir)
+    #         self.mlp1_mlp2.save(model_dir)
+    #         self.mlp2_zout.save(model_dir)
 
-            self.zout_targetlogit.save(model_dir)
+    #         self.zout_targetlogit.save(model_dir)
 
-        else:
-            self.circuit.save_to_json(self.exp_dir, model_name=self.model_name, overwrite=True)
-    def load_from_disk(self, model_directory):
-        """
-        Loads parameter/config values from disk to this model
+    #     else:
+    #         self.circuit.save_to_json(self.exp_dir, model_name=self.model_name, overwrite=True)
+    # def load_from_disk(self, model_directory):
+    #     """
+    #     Loads parameter/config values from disk to this model
 
-        Args:
-            model_directory: directory/path to saved model parameter/config values
-        """
-        print(" > Loading model from ",model_directory)
-        with Context("Circuit") as self.circuit:
-            self.circuit.load_from_dir(model_directory)
-            processes = (
-                self.circuit.reset_process, self.circuit.advance_process,
-                self.circuit.evolve_process, self.circuit.project_process
-            )
-            self._dynamic(processes)
+    #     Args:
+    #         model_directory: directory/path to saved model parameter/config values
+    #     """
+    #     print(" > Loading model from ",model_directory)
+    #     with Context("Circuit") as self.circuit:
+    #         self.circuit.load_from_dir(model_directory)
+    #         processes = (
+    #             self.circuit.reset_process, self.circuit.advance_process,
+    #             self.circuit.evolve_process, self.circuit.project_process
+    #         )
+    #         self._dynamic(processes)
 
     def process(self, obs, lab, adapt_synapses=True):
         print("obs shape",{obs.shape})
@@ -696,53 +589,49 @@ class PCN():
         ## can think of the PCN as doing "PEM" -- projection, expectation, then maximization
         eps = 0.001
         _lab = jnp.clip(lab, eps, 1. - eps)
-        #self.circuit.reset(do_reset=True)
-        # self.circuit.reset()
+        # self.circuit.reset(do_reset=True)
+        self.circuit.reset()
        
         ## pin/tie inference synapses to be exactly equal to the forward ones
+        
+       # Copy encoder/decoder weights between W and Q pathways
         self.Qembed_zqkv.weights.set(self.EmbddingHebbain.weights.value)
         self.Qembed_zqkv.biases.set(self.EmbddingHebbain.biases.value)
-        self.Q_zqkv_input_q.weights.set(self.W_zqkv_q.weights.value)  # int,512
-        self.Q_zqkv_input_q.biases.set(self.W_zqkv_q.biases.value)
 
-        self.Q_zqkv_input_k.weights.set(self.W_zqkv_k.weights.value)
-        self.Q_zqkv_input_k.biases.set(self.W_zqkv_k.biases.value)
+        self.Qqkv_score.weights.set(self.Attention_Hebbian.weights.value)
+        self.Qqkv_score.biases.set(self.Attention_Hebbian.biases.value)
 
-        self.Q_zqkv_input_v.weights.set(self.W_zqkv_v.weights.value)
-        self.Q_zqkv_input_v.biases.set(self.W_zqkv_v.biases.value)
+        self.QAttention_mlp1.weights.set(self.Attention_to_mlp.weights.value)
+        self.QAttention_mlp1.biases.set(self.Attention_to_mlp.biases.value)
 
-        self.Qinputk_attentionscore.weights.set(self.inputs_k_attentionout.weights.value)
-        self.Qinputk_attentionscore.biases.set(self.inputs_k_attentionout.biases.value)
+        self.Qmlp1_mlp2.weights.set(self.MLP.mlp1_mlp2.weights.value)
+        self.Qmlp1_mlp2.biases.set(self.MLP.mlp1_mlp2.biases.value)
 
-        self.Qinputq_attentionscore.weights.set(self.inputs_q_attentionout.weights.value)
-        self.Qinputq_attentionscore.biases.set(self.inputs_q_attentionout.biases.value)
-
-        self.Qinputv_attentionscore.weights.set(self.inputs_v_attentionout.weights.value)
-        self.Qinputv_attentionscore.biases.set(self.inputs_v_attentionout.biases.value)
-
-        self.QAttention_mlp1.weights.set(self.attention_to_mlp.weights.value)
-        self.QAttention_mlp1.biases.set(self.attention_to_mlp.biases.value)
-
-        self.Qmlp1_mlp2.weights.set(self.mlp1_mlp2.weights.value)
-        self.Qmlp1_mlp2.biases.set(self.mlp1_mlp2.biases.value)
-
-        self.Qmlp2_out.weights.set(self.mlp2_zout.weights.value)
-        self.Qmlp2_out.biases.set(self.mlp2_zout.biases.value)
+        self.Qmlp2_out.weights.set(self.MLP.mlp2_zout.weights.value)
+        self.Qmlp2_out.biases.set(self.MLP.mlp2_zout.biases.value)
 
         self.Qout_target.weights.set(self.zout_targetlogit.weights.value)
         self.Qout_target.biases.set(self.zout_targetlogit.biases.value)
 
-        ## pin/tie feedback synapses to transpose of forward ones
-        self.Eattentionout_input_k.weights.set(jnp.transpose(self.inputs_k_attentionout.weights.value))
-        self.Eattentionout_input_q.weights.set(jnp.transpose(self.inputs_q_attentionout.weights.value))
-        self.Eattentionout_input_v.weights.set(jnp.transpose(self.inputs_v_attentionout.weights.value))
 
-        self.Emlp1_to_attentionout.weights.set(jnp.transpose(self.attention_to_mlp.weights.value))
-        self.Emlp2_mlp1.weights.set(jnp.transpose(self.mlp1_mlp2.weights.value))
-        self.Ezout_mlp2.weights.set(jnp.transpose(self.mlp2_zout.weights.value))
+        ## pin/tie feedback synapses to transpose of forward ones
+        # self.Ezscore_zqkv.weights.set(jnp.transpose(self.EmbddingHebbain.weights.value))
+        
+
+        self.Ezscore_zqkv.weights.set(jnp.transpose(self.Attention_Hebbian.weights.value))
+        
+
+        self.MLP.Emlp1_to_z_score.weights.set(jnp.transpose(self.Attention_to_mlp.weights.value))
+        
+
+        self.MLP.Emlp2_mlp1.weights.set(jnp.transpose(self.MLP.mlp1_mlp2.weights.value))
+    
+
+        self.MLP.Ezout_mlp2.weights.set(jnp.transpose(self.MLP.mlp2_zout.weights.value))
+        
 
         self.Etargetlogit_zout.weights.set(jnp.transpose(self.zout_targetlogit.weights.value))
-
+        
 
         ## Perform P-step (projection step)
         self.circuit.clamp_input(obs)
@@ -751,19 +640,18 @@ class PCN():
         self.circuit.project(t=0., dt=1.) ## do projection/inference
         
         ## initialize dynamics of generative model latents to projected states
-        self.inputs_k.z.set(self.q_inputk.z.value)
-        self.inputs_v.z.set(self.q_inputv.z.value)
-        self.inputs_q.z.set(self.q_inputq.z.value)
-        self.Attention_out.z.set(self.q_Attentionscore.z.value)
-        self.mlp_1.z.set(self.q_mlp1.z.value)
-        self.mlp_2.z.set(self.q_mlp2.z.value)
+        self.zqkv.z.set(self.q_zqkv.z.value)
+
+        self.z_score.z.set(self.q_score.z.value)
+        self.MLP.mlp_1.z.set(self.q_mlp1.z.value)
+        self.MLP.mlp_2.z.set(self.q_mlp2.z.value)
         self.z_out.z.set(self.q_out.z.value)
 
-        ## self.z3.z.set(self.q3.z.value)
-        # ### Note: e1 = 0, e2 = 0 at initial conditions
+        # ## self.z3.z.set(self.q3.z.value)
+        # # ### Note: e1 = 0, e2 = 0 at initial conditions
         self.target_logit_error.dmu.set(self.qError_target_logit.dmu.value)
         self.target_logit_error.dtarget.set(self.qError_target_logit.dtarget.value)
-        ## get projected prediction (from the P-step)
+        # ## get projected prediction (from the P-step)
         y_mu_inf = self.qtarget_logits.z.value
 
         EFE = 0. ## expected free energy
@@ -776,80 +664,78 @@ class PCN():
                 self.circuit.advance(t=ts, dt=1.)
 
             y_mu = self.target_logit_error.mu.value ## get settled prediction
-            ## calculate approximate EFE
-            L1 = self.input_q_ErrorCell.L.value
-            L2 = self.input_k_ErrorCell.L.value
-            L3 = self.input_v_ErrorCell.L.value
-            L4 = self.Attentionout_Error.L.value
-            L5 = self.mlp_1_error.L.value
-            L6 = self.mlp_2_error.L.value
-            L7 = self.z_out_error.L.value
-            L8 = self.target_logit_error.L.value
+          
+            L1 = self.zqkv_error.L.value
+            L2 = self.z_score_Error.L.value
+            L3 = self.MLP.mlp_1_error.L.value
+            L4 = self.MLP.mlp_2_error.L.value
+            L5 = self.z_out_error.L.value
+            L6 = self.target_logit_error.L.value
 
-            EFE = L1 + L2 + L3 + L4 + L5 + L6 + L7 + L8
+            EFE = L1 + L2 + L3 + L4 + L5 + L6 
 
 
-            ## Perform (optional) M-step (scheduled synaptic updates)
-            if adapt_synapses == True:
-                #self.circuit.evolve(t=self.T, dt=self.dt)
-                self.circuit.evolve(t=self.T, dt=1.)
+            # ## Perform (optional) M-step (scheduled synaptic updates)
+            # if adapt_synapses == True:
+            #     #self.circuit.evolve(t=self.T, dt=self.dt)
+            #     self.circuit.evolve(t=self.T, dt=1.)
         ## skip E/M steps if just doing test-time inference
         print(f"y_mu_inf -------------"  ,{y_mu_inf})
         print(f"y_mu -------------------- ",{y_mu})
         print(f"EFE ________________________",{EFE})
         return y_mu_inf, y_mu, EFE
 
-    # def get_latents(self):
-    #     return self.q2.z.value
+    # # def get_latents(self):
+    # #     return self.q2.z.value
 
-    def _get_norm_string(self):  ## debugging routine
-    # weights
-        W_zqkv_q = self.W_zqkv_q.weights.value
-        W_zqkv_k = self.W_zqkv_k.weights.value
-        W_zqkv_v = self.W_zqkv_v.weights.value
-        inputs_k_attentionout = self.inputs_k_attentionout.weights.value
-        inputs_q_attentionout = self.inputs_q_attentionout.weights.value
-        inputs_v_attentionout = self.inputs_v_attentionout.weights.value
-        attention_to_mlp = self.attention_to_mlp.weights.value
-        mlp1_mlp2 = self.mlp1_mlp2.weights.value
-        mlp2_zout = self.mlp2_zout.weights.value
-        zout_targetlogit = self.zout_targetlogit.weights.value
+    # def _get_norm_string(self):  ## debugging routine
+    # # weights
+    #     W_zqkv_q = self.W_zqkv_q.weights.value
+    #     W_zqkv_k = self.W_zqkv_k.weights.value
+    #     W_zqkv_v = self.W_zqkv_v.weights.value
+    #     inputs_k_z_score = self.inputs_k_z_score.weights.value
+    #     inputs_q_z_score = self.inputs_q_z_score.weights.value
+    #     inputs_v_z_score = self.inputs_v_z_score.weights.value
+    #     attention_to_mlp = self.Attention_Hebbian_to_mlp.weights.value
+    #     mlp1_mlp2 = self.mlp1_mlp2.weights.value
+    #     mlp2_zout = self.mlp2_zout.weights.value
+    #     zout_targetlogit = self.zout_targetlogit.weights.value
 
-        # biases (if they exist)
-        b_emb_q = self.W_zqkv_q.biases.value
-        b_emb_k = self.W_zqkv_k.biases.value
-        b_emb_v = self.W_zqkv_v.biases.value
-        b_inputs_k_attentionout = self.inputs_k_attentionout.biases.value
-        b_inputs_q_attentionout = self.inputs_q_attentionout.biases.value
-        b_inputs_v_attentionout = self.inputs_v_attentionout.biases.value
-        b_attention_to_mlp = self.attention_to_mlp.biases.value
-        b_mlp1_mlp2 = self.mlp1_mlp2.biases.value
-        b_mlp2_zout = self.mlp2_zout.biases.value
-        b_zout_targetlogit = self.zout_targetlogit.biases.value
+    #     # biases (if they exist)
+    #     b_emb_q = self.W_zqkv_q.biases.value
+    #     b_emb_k = self.W_zqkv_k.biases.value
+    #     b_emb_v = self.W_zqkv_v.biases.value
+    #     b_inputs_k_z_score = self.inputs_k_z_score.biases.value
+    #     b_inputs_q_z_score = self.inputs_q_z_score.biases.value
+    #     b_inputs_v_z_score = self.inputs_v_z_score.biases.value
+    #     b_attention_to_mlp = self.Attention_Hebbian_to_mlp.biases.value
+    #     b_mlp1_mlp2 = self.mlp1_mlp2.biases.value
+    #     b_mlp2_zout = self.mlp2_zout.biases.value
+    #     b_zout_targetlogit = self.zout_targetlogit.biases.value
 
-        _norms = (
-            f"W_zqkv_q: {jnp.linalg.norm(W_zqkv_q)} "
-            f"W_zqkv_k: {jnp.linalg.norm(W_zqkv_k)} "
-            f"W_zqkv_v: {jnp.linalg.norm(W_zqkv_v)} "
-            f"inputs_k_attentionout: {jnp.linalg.norm(inputs_k_attentionout)} "
-            f"inputs_q_attentionout: {jnp.linalg.norm(inputs_q_attentionout)} "
-            f"inputs_v_attentionout: {jnp.linalg.norm(inputs_v_attentionout)} "
-            f"attention_to_mlp: {jnp.linalg.norm(attention_to_mlp)} "
-            f"mlp1_mlp2: {jnp.linalg.norm(mlp1_mlp2)} "
-            f"mlp2_zout: {jnp.linalg.norm(mlp2_zout)} "
-            f"zout_targetlogit: {jnp.linalg.norm(zout_targetlogit)}\n"
-            f"b_emb_q: {jnp.linalg.norm(b_emb_q)} "
-            f"b_emb_k: {jnp.linalg.norm(b_emb_k)} "
-            f"b_emb_v: {jnp.linalg.norm(b_emb_v)} "
-            f"b_inputs_k_attentionout: {jnp.linalg.norm(b_inputs_k_attentionout)} "
-            f"b_inputs_q_attentionout: {jnp.linalg.norm(b_inputs_q_attentionout)} "
-            f"b_inputs_v_attentionout: {jnp.linalg.norm(b_inputs_v_attentionout)} "
-            f"b_attention_to_mlp: {jnp.linalg.norm(b_attention_to_mlp)} "
-            f"b_mlp1_mlp2: {jnp.linalg.norm(b_mlp1_mlp2)} "
-            f"b_mlp2_zout: {jnp.linalg.norm(b_mlp2_zout)} "
-            f"b_zout_targetlogit: {jnp.linalg.norm(b_zout_targetlogit)}"
-        )
+    #     _norms = (
+    #         f"W_zqkv_q: {jnp.linalg.norm(W_zqkv_q)} "
+    #         f"W_zqkv_k: {jnp.linalg.norm(W_zqkv_k)} "
+    #         f"W_zqkv_v: {jnp.linalg.norm(W_zqkv_v)} "
+    #         f"inputs_k_z_score: {jnp.linalg.norm(inputs_k_z_score)} "
+    #         f"inputs_q_z_score: {jnp.linalg.norm(inputs_q_z_score)} "
+    #         f"inputs_v_z_score: {jnp.linalg.norm(inputs_v_z_score)} "
+    #         f"attention_to_mlp: {jnp.linalg.norm(attention_to_mlp)} "
+    #         f"mlp1_mlp2: {jnp.linalg.norm(mlp1_mlp2)} "
+    #         f"mlp2_zout: {jnp.linalg.norm(mlp2_zout)} "
+    #         f"zout_targetlogit: {jnp.linalg.norm(zout_targetlogit)}\n"
+    #         f"b_emb_q: {jnp.linalg.norm(b_emb_q)} "
+    #         f"b_emb_k: {jnp.linalg.norm(b_emb_k)} "
+    #         f"b_emb_v: {jnp.linalg.norm(b_emb_v)} "
+    #         f"b_inputs_k_z_score: {jnp.linalg.norm(b_inputs_k_z_score)} "
+    #         f"b_inputs_q_z_score: {jnp.linalg.norm(b_inputs_q_z_score)} "
+    #         f"b_inputs_v_z_score: {jnp.linalg.norm(b_inputs_v_z_score)} "
+    #         f"b_attention_to_mlp: {jnp.linalg.norm(b_attention_to_mlp)} "
+    #         f"b_mlp1_mlp2: {jnp.linalg.norm(b_mlp1_mlp2)} "
+    #         f"b_mlp2_zout: {jnp.linalg.norm(b_mlp2_zout)} "
+    #         f"b_zout_targetlogit: {jnp.linalg.norm(b_zout_targetlogit)}"
+    #     )
         
-        return _norms
+    #     return _norms
 
         
