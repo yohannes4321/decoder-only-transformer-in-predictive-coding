@@ -6,13 +6,13 @@ from ngcsimlib.context import Context
 from ngclearn.utils import JaxProcess
 import ngclearn.utils.weight_distribution as dist
 from ngclearn.utils.model_utils import drop_out,softmax,gelu,layer_normalize
-from EmbeddingHebbian import EmbeddingHebbianSynapse
+from EmbeddingHebbiansynapsis import EmbeddingHebbianSynapse
 from ngclearn.utils.optim import adam
 from jax import jit,random,numpy as jnp 
 import jax
 from ngcsimlib.utils import get_current_context
 from MLP import MLP
-from attention_utils import AttentionBlock
+from AttentionHebbiansynapsis import AttentionHebbianSynapse
 from ngclearn.components import GaussianErrorCell as ErrorCell, RateCell, HebbianSynapse, StaticSynapse
 # from ngclearn.com.jaxComponent import JaxComponent
 from jax import numpy as jnp, random, jit
@@ -62,32 +62,36 @@ class PCN():
 
                 self.MLP = MLP("mlp", dkey, dim, act_fx, tau_m, eta, wlb, wub, optim_type)
 
-                self.Attention_Hebbian= AttentionBlock(
-    name="attn_block",
-    n_heads=n_heads,
-    n_embed=n_embed,
-    block_size=block_size,
-    dropout_rate=dropout_rate,
-    batch_size=batch_size,
-    shape=(n_embed,n_embed),
-    eta=eta,
-    weight_init=dist.uniform(amin=wlb, amax=wub),
+                self.Attention_Hebbian= AttentionHebbianSynapse(
+    "Attention_Hebbian",
+    block_size=10,
+    batch_size=4,
+    vocab_size=30,
+    embed_dim=128,
+    shape=(2, 3),
+    eta=0.0004,
+    optim_type='adam',
+    sign_value=-1.0,
+    prior=("l1l2", 0.001),
+    prior_lmbda=(0.001, 0.01), dropout_rate=dropout_rate
+     # (l2_strength, l1_ratio)
 )
-                self.zEmbedding = RateCell("Embedding", n_units=dim, tau_m=0., act_fx="identity")
+                self.zEmbedding = RateCell("zEmbedding", n_units=dim, tau_m=0., act_fx="identity")
                 self.zqkv = RateCell("zqkv", n_units=dim, tau_m=tau_m, act_fx=act_fx, prior=("gaussian", 0.), integration_type="euler")
                 self.zqkv_error = ErrorCell("zqkv_error", n_units=dim)
              
                 self.EmbddingHebbain = EmbeddingHebbianSynapse(
-    name="emb_syn",
-    vocab_size=vocab_size,
-    n_embed=n_embed,
-    block_size=block_size,
-    batch_size=batch_size,
-    weight_init=dist.uniform(amin=wlb, amax=wub),
-    eta=eta,
-    w_bound=0.,
-    key=dkey
-    
+    "EmbddingHebbain",
+    block_size=10,
+    batch_size=4,
+    vocab_size=30,
+    embed_dim=128,
+    shape=(2, 3),
+    eta=0.0004,
+    optim_type='adam',
+    sign_value=-1.0,
+    prior=("l1l2", 0.001),
+    prior_lmbda=(0.001, 0.01),
 )
 # )
                 self.z_out_error=ErrorCell("z_out_error", n_units=dim)
@@ -127,7 +131,7 @@ class PCN():
                     bias_init=dist.constant(value=0.), w_bound=0., optim_type=optim_type, sign_value=-1., key=subkeys[4]
                 )
                 self.Emlp1_to_attention = StaticSynapse(
-                            "mlp_to_attention", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
+                            "Emlp1_to_attention", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
                         )
                 self.Ezscore_zqkv = StaticSynapse(
                             "Ezscore_zqkv", shape=(dim, dim), weight_init=dist.uniform(amin=wlb, amax=wub), key=subkeys[5]
@@ -316,7 +320,7 @@ class PCN():
 >> self.zqkv_error.advance_state
 >> self.zqkv.advance_state
 >> self.W_zqkv_q.advance_state
->> self.Attention_Hebbian.advance_state
+>> self.Attention_Hebbian.advance_state_attention
 >> self.W_zqkv_k.advance_state
 >> self.W_zqkv_v.advance_state
 >> self.z_score_Error.advance_state
@@ -338,7 +342,7 @@ class PCN():
 >> self.MLP.Emlp2_mlp1.advance_state
 >> self.MLP.Ezout_mlp2.advance_state
 >> self.Etargetlogit_zout.advance_state
->> self.EmbddingHebbain.advance_state
+>> self.EmbddingHebbain.advance_state_hebbian
 
 
                 )
@@ -396,20 +400,20 @@ class PCN():
                 project_process = (
                     JaxProcess(name="project_process")
                 
->> self.q_embed.advance_state
->> self.q_zqkv.advance_state
->> self.q_score.advance_state
->> self.q_mlp1.advance_state
->> self.q_mlp2.advance_state
->> self.q_out.advance_state
->> self.qtarget_logits.advance_state
->> self.qError_target_logit.advance_state
->> self.Qembed_zqkv.advance_state
->> self.Qqkv_score.advance_state
->> self.QAttention_mlp1.advance_state
->> self.Qmlp1_mlp2.advance_state
->> self.Qmlp2_out.advance_state
->> self.Qout_target.advance_state
+                            >> self.q_embed.advance_state
+                            >> self.q_zqkv.advance_state
+                            >> self.q_score.advance_state
+                            >> self.q_mlp1.advance_state
+                            >> self.q_mlp2.advance_state
+                            >> self.q_out.advance_state
+                            >> self.qtarget_logits.advance_state
+                            >> self.qError_target_logit.advance_state
+                            >> self.Qembed_zqkv.advance_state
+                            >> self.Qqkv_score.advance_state
+                            >> self.QAttention_mlp1.advance_state
+                            >> self.Qmlp1_mlp2.advance_state
+                            >> self.Qmlp2_out.advance_state
+                            >> self.Qout_target.advance_state
 
 
 
@@ -420,96 +424,97 @@ class PCN():
                 self._dynamic(process)
     def _dynamic(self,process):
         vars = self.circuit.get_components( 
-"self.zEmbedding",
-"self.zqkv_error",
-"self.zqkv",
-"self.W_zqkv_q",
-"self.Attention_Hebbian",
-"self.W_zqkv_k",
-"self.W_zqkv_v",
-"self.z_score_Error",
-"self.z_score",
-"self.Attention_to_mlp",
-"self.mlp_1_error",
-"self.mlp_1",
-"self.mlp1_mlp2",
-"self.mlp_2_error",
-"self.mlp_2",
-"self.mlp2_zout",
-"self.z_out_error",
-"self.z_out",
-"self.zout_targetlogit",
-"self.target_logit_error",
-"self.target_logit",
-"self.Ezscore_zqkv",
-"self.Emlp1_to_z_score",
-"self.Emlp2_mlp1",
-"self.Ezout_mlp2",
-"self.Etargetlogit_zout",
-"self.EmbddingHebbain",
-"self.q_embed",
-"self.q_zqkv",
-"self.q_score",
-"self.q_mlp1",
-"self.q_mlp2",
-"self.q_out",
-"self.qtarget_logits",
-"self.qError_target_logit",
-"self.Qembed_zqkv",
-"self.Qqkv_score",
-"self.QAttention_mlp1",
-"self.Qmlp1_mlp2",
-"self.Qmlp2_out",
-"self.Qout_target",
+          "zEmbedding",
+"zqkv_error",
+"zqkv",
+"W_zqkv_q",
+"Attention_Hebbian",
+"W_zqkv_k",
+"W_zqkv_v",
+"z_score_Error",
+"z_score",
+"Attention_to_mlp",
+"mlp_1_error",
+"mlp_1",
+"mlp1_mlp2",
+"mlp_2_error",
+"mlp_2",
+"mlp2_zout",
+"z_out_error",
+"z_out",
+"zout_targetlogit",
+"target_logit_error",
+"target_logit",
+"Ezscore_zqkv",
+"Emlp1_to_z_score",
+"Emlp2_mlp1",
+"Ezout_mlp2",
+"Etargetlogit_zout",
+"EmbddingHebbain",
+"q_embed",
+"q_zqkv",
+"q_score",
+"q_mlp1",
+"q_mlp2",
+"q_out",
+"qtarget_logits",
+"qError_target_logit",
+"Qembed_zqkv",
+"Qqkv_score",
+"QAttention_mlp1",
+"Qmlp1_mlp2",
+"Qmlp2_out",
+"Qout_target",
 
-        )
 
-#     # # Get components
-#     #     *component_names)
+                        )
 
-#     # Unpack into attributes
+                #     # # Get components
+                #     #     *component_names)
+
+                #     # Unpack into attributes
         (   
-            self.zEmbedding,
-self.zqkv_error,
-self.zqkv,
-self.W_zqkv_q,
-self.Attention_Hebbian,
-self.W_zqkv_k,
-self.W_zqkv_v,
-self.z_score_Error,
-self.z_score,
-self.Attention_to_mlp,
-self.mlp_1_error,
-self.mlp_1,
-self.mlp1_mlp2,
-self.mlp_2_error,
-self.mlp_2,
-self.mlp2_zout,
-self.z_out_error,
-self.z_out,
-self.zout_targetlogit,
-self.target_logit_error,
-self.target_logit,
-self.Ezscore_zqkv,
-self.Emlp1_to_z_score,
-self.Emlp2_mlp1,
-self.Ezout_mlp2,
-self.Etargetlogit_zout,
-self.EmbddingHebbain,
-self.q_embed,
-self.q_zqkv,
-self.q_score,
-self.q_mlp1,
-self.q_mlp2,
-self.q_out,
-self.qtarget_logits,
-self.qError_target_logit,
-self.Qembed_zqkv,
-self.Qqkv_score,
-self.QAttention_mlp1,
-self.Qmlp1_mlp2,
-self.Qmlp2_out,
-self.Qout_target,
+                self.zEmbedding,
+                self.zqkv_error,
+                self.zqkv,
+                self.W_zqkv_q,
+                self.Attention_Hebbian,
+                self.W_zqkv_k,
+                self.W_zqkv_v,
+                self.z_score_Error,
+                self.z_score,
+                self.Attention_to_mlp,
+                self.mlp_1_error,
+                self.mlp_1,
+                self.mlp1_mlp2,
+                self.mlp_2_error,
+                self.mlp_2,
+                self.mlp2_zout,
+                self.z_out_error,
+                self.z_out,
+                self.zout_targetlogit,
+                self.target_logit_error,
+                self.target_logit,
+                self.Ezscore_zqkv,
+                self.Emlp1_to_z_score,
+                self.Emlp2_mlp1,
+                self.Ezout_mlp2,
+                self.Etargetlogit_zout,
+                self.EmbddingHebbain,
+                self.q_embed,
+                self.q_zqkv,
+                self.q_score,
+                self.q_mlp1,
+                self.q_mlp2,
+                self.q_out,
+                self.qtarget_logits,
+                self.qError_target_logit,
+                self.Qembed_zqkv,
+                self.Qqkv_score,
+                self.QAttention_mlp1,
+                self.Qmlp1_mlp2,
+                self.Qmlp2_out,
+                self.Qout_target,
 
         ) = vars
         self.nodes = vars
@@ -537,31 +542,31 @@ self.Qout_target,
         # self.circuit.wrap_and_add_command((clamp_infer_target), name="clamp_infer_target")
         
 
-    # def save_to_disk(self, params_only=False):
-    #     """
-    #     Saves current model parameter values to disk
+    def save_to_disk(self, params_only=False):
+        """
+        Saves current model parameter values to disk
 
-    #     Args:
-    #         params_only: if True, save only param arrays to disk (and not JSON sim/model structure)
-    #     """
-    #     if params_only:
-    #         model_dir = "{}/{}/custom".format(self.exp_dir, self.model_name)
-    #         # Assuming all these are attributes in your class
-    #         self.EmbddingHebbain(model_dir)
-    #         self.W_zqkv_q.save(model_dir)
-    #         self.W_zqkv_k.save(model_dir)
-    #         self.W_zqkv_v.save(model_dir)
+        Args:
+            params_only: if True, save only param arrays to disk (and not JSON sim/model structure)
+        """
+        if params_only:
+            model_dir = "{}/{}/custom".format(self.exp_dir, self.model_name)
+            # Assuming all these are attributes in your class
+            self.EmbddingHebbain(model_dir)
+            self.W_zqkv_q.save(model_dir)
+            self.W_zqkv_k.save(model_dir)
+            self.W_zqkv_v.save(model_dir)
 
-    #         self.inputs_k_z_score.save(model_dir)
-    #         self.inputs_q_z_score.save(model_dir)
-    #         self.inputs_v_z_score.save(model_dir)
+            self.inputs_k_z_score.save(model_dir)
+            self.inputs_q_z_score.save(model_dir)
+            self.inputs_v_z_score.save(model_dir)
 
-    #         self.Attention_Hebbian_to_mlp.save(model_dir)
+            self.Attention_Hebbian_to_mlp.save(model_dir)
 
-    #         self.mlp1_mlp2.save(model_dir)
-    #         self.mlp2_zout.save(model_dir)
+            self.mlp1_mlp2.save(model_dir)
+            self.mlp2_zout.save(model_dir)
 
-    #         self.zout_targetlogit.save(model_dir)
+            self.zout_targetlogit.save(model_dir)
 
     #     else:
     #         self.circuit.save_to_json(self.exp_dir, model_name=self.model_name, overwrite=True)
