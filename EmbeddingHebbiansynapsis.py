@@ -9,6 +9,7 @@ from ngcsimlib.deprecators import deprecate_args
 import jax
 import jax.numpy as jnp
 from flax import nnx
+import math
 @partial(jit, static_argnums=[3, 4, 5, 6, 7, 8, 9])
 def _calc_update(pre, post, W, w_bound, is_nonnegative=True, signVal=1.,
                  prior_type=None, prior_lmbda=0.,
@@ -169,7 +170,7 @@ class EmbeddingHebbianSynapse(DenseSynapse):
                  optim_type="sgd", pre_wght=1., post_wght=1., p_conn=1.,
                  resist_scale=1., **kwargs):
         super().__init__(name, shape, weight_init, bias_init, resist_scale,
-                         p_conn, batch_size=batch_size, **kwargs)
+                         p_conn, batch_size, **kwargs)
 
         if w_decay > 0.:
             prior = ('l2', w_decay)
@@ -179,6 +180,7 @@ class EmbeddingHebbianSynapse(DenseSynapse):
             prior_type = "constant"
         ## synaptic plasticity properties and characteristics
         self.shape = shape
+        self.block_size=block_size
         self.Rscale = resist_scale
         self.prior_type = prior_type
         if self.prior_type.lower() == "gaussian":
@@ -192,25 +194,25 @@ class EmbeddingHebbianSynapse(DenseSynapse):
         self.eta = eta
         self.is_nonnegative = is_nonnegative
         self.sign_value = sign_value
-
+        self.batch_size = batch_size
 
         ## optimization / adjustment properties (given learning dynamics above)
         self.opt = get_opt_step_fn(optim_type, eta=self.eta)
 
         # compartments (state of the cell, parameters, will be updated through stateless calls)
-        self.preVals = jnp.zeros((self.batch_size, shape[0]))
-        self.postVals = jnp.zeros((self.batch_size, shape[1]))
+        self.preVals = jnp.zeros((self.batch_size*self.block_size, shape[0]))
+        self.postVals = jnp.zeros((self.batch_size*self.block_size, shape[1]))
         self.pre = Compartment(self.preVals)
         self.post = Compartment(self.postVals)
         self.dWeights = Compartment(jnp.zeros(shape))
         self.dBiases = Compartment(jnp.zeros(shape[1]))
-        self.batch_size = batch_size
+        
         
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
         self.block_size = block_size
-        self.inputs= Compartment(jnp.zeros((self.batch_size,self.block_size)))
-        self.outputs= Compartment(jnp.zeros((self.batch_size*self.batch_size,self.embed_dim)))
+        self.inputs= Compartment(jnp.zeros((self.batch_size*self.block_size,self.block_size)))
+        self.outputs= Compartment(jnp.zeros((self.batch_size*self.block_size,self.embed_dim)))
         
 
         #key, subkey = random.split(self.key.value)
@@ -222,24 +224,47 @@ class EmbeddingHebbianSynapse(DenseSynapse):
 
 
     @staticmethod
-    def token_positional_embedding(x, vocab_size, embed_dim, block_size, dropout_rate):
+    def token_positional_embedding(x, embed_dim, vocab_size, max_seq_len, dropout_rate, rng):
         """
-        x: [batch_size, seq_len] token indices
-        returns: [batch_size * seq_len, embed_dim]
+        Functional token + positional embedding with manual dropout using nnx.Embed.
+        
+        Args:
+            x: [batch_size, seq_len] int32 token IDs
+            embed_dim: embedding dimension
+            vocab_size: size of the vocabulary
+            max_seq_len: maximum sequence length for positional encoding
+            dropout_rate: float, dropout probability
+            rng: jax.random.PRNGKey for dropout
+        
+        Returns:
+            [batch_size, seq_len, embed_dim] embeddings + positional encodings
         """
-        key = jax.random.PRNGKey(0)
-        rngs = nnx.Rngs(key)
-        wte = nnx.Embed(num_embeddings=vocab_size, features=embed_dim, rngs=rngs)
-        wpe = nnx.Embed(num_embeddings=block_size, features=embed_dim, rngs=rngs)
-        dropout = nnx.Dropout(rate=dropout_rate, rngs=rngs)
 
-        batch_size, seq_len = x.shape
-        tok_emb = wte(x)  # (B, T, C)
-        pos = jnp.arange(seq_len)[None, :]  # (1, T)
-        pos_emb = wpe(pos)
-        drive = dropout(tok_emb + pos_emb)
-        drive_2d = drive.reshape(batch_size * seq_len, embed_dim)
-        return drive_2d
+        # --- Token embedding using nnx.Embed ---
+        token_embed = nnx.Embed(num_embeddings=vocab_size, features=embed_dim)
+        x_embed = token_embed(x)  # [batch_size, seq_len, embed_dim]
+
+        # --- Positional encodings ---
+        positions = jnp.arange(max_seq_len).reshape(-1, 1)
+        div_term = jnp.exp(jnp.arange(0, embed_dim, 2) * (-math.log(10000.0) / embed_dim))
+
+        pe = jnp.zeros((max_seq_len, embed_dim))
+        pe = pe.at[:, 0::2].set(jnp.sin(positions * div_term))
+        pe = pe.at[:, 1::2].set(jnp.cos(positions * div_term))
+        pe = jnp.expand_dims(pe, axis=0)  # [1, max_seq_len, embed_dim]
+
+        # --- Add positional encoding ---
+        seq_len = x.shape[1]
+        x_embed = x_embed + pe[:, :seq_len, :]  # broadcast over batch
+
+        # --- Manual dropout ---
+        keep_prob = 1.0 - dropout_rate
+        mask = jax.random.bernoulli(rng, keep_prob, x_embed.shape)
+        x_embed = x_embed * mask / keep_prob
+
+        return x_embed
+
+    
 
     # class EmbeddingHebbianSynapse(DenseSynapse):
     @transition(output_compartments=["outputs","weights"])
@@ -385,9 +410,9 @@ if __name__ == '__main__':
     with Context("Bar") as bar:
         Wab = EmbeddingHebbianSynapse(
     "Wab",
-    block_size=10,
+    block_size=200,
     batch_size=4,
-    vocab_size=30,
+    vocab_size=50,
     embed_dim=128,
     shape=(2, 3),
     eta=0.0004,
